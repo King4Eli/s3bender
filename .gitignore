@@ -1,0 +1,10 @@
+target/
+data/
+*.class
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Contains real secrets for this environment - keep .env.example as the tracked template.
+.env

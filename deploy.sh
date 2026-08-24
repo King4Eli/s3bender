@@ -1,0 +1,1 @@
+/home/king/goodapps/projs/global_app/deploy.sh

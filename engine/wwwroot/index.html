@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>s3bender console</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>s3bender</h1>
+    <p class="tagline">object storage console</p>
+  </header>
+
+  <main>
+    <section class="panel" id="admin-panel">
+      <h2>Admin</h2>
+      <label>
+        Admin API key
+        <input id="admin-key" type="password" placeholder="X-Admin-Api-Key" autocomplete="off" />
+      </label>
+
+      <form id="create-bucket-form">
+        <label>
+          New bucket name
+          <input id="new-bucket-name" type="text" placeholder="my-bucket" pattern="[a-z0-9-]{3,63}" required />
+        </label>
+        <button type="submit">Create bucket</button>
+      </form>
+
+      <div class="row-between">
+        <h3>Buckets</h3>
+        <button id="refresh-buckets" type="button">Refresh</button>
+      </div>
+      <table id="buckets-table">
+        <thead><tr><th>Name</th><th>Created</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel" id="bucket-panel">
+      <h2>Bucket</h2>
+      <label>
+        Bucket name
+        <input id="bucket-name" type="text" placeholder="my-bucket" />
+      </label>
+      <label>
+        Access key
+        <input id="access-key" type="text" autocomplete="off" />
+      </label>
+      <label>
+        Secret key
+        <input id="secret-key" type="password" autocomplete="off" />
+      </label>
+      <label class="checkbox">
+        <input id="remember-creds" type="checkbox" checked />
+        Remember these keys in this browser (localStorage - dev convenience only)
+      </label>
+
+      <div class="row-between">
+        <h3>Objects</h3>
+        <div>
+          <input id="prefix-filter" type="text" placeholder="prefix (optional)" />
+          <button id="list-objects" type="button">List</button>
+        </div>
+      </div>
+
+      <label class="upload">
+        Upload file
+        <input id="file-input" type="file" />
+      </label>
+
+      <table id="objects-table">
+        <thead><tr><th>Key</th><th>Size</th><th>Modified</th><th>ETag</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <dialog id="secret-dialog">
+    <h3 id="secret-dialog-title">Bucket created</h3>
+    <p>This secret key is shown <strong>once</strong>. Copy it now - the server cannot show it again.</p>
+    <label>Access key <input id="dialog-access-key" type="text" readonly /></label>
+    <label>Secret key <input id="dialog-secret-key" type="text" readonly /></label>
+    <button id="dialog-close" type="button">I've saved it</button>
+  </dialog>
+
+  <dialog id="preview-dialog">
+    <div class="row-between">
+      <h3 id="preview-title"></h3>
+      <button id="preview-close" type="button">Close</button>
+    </div>
+    <div id="preview-body" class="preview-body"></div>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

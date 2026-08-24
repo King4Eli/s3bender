@@ -1,6 +1,4 @@
-target/
+bin/
+obj/
 data/
-.git/
-.env
-_docs/
-*.md
+Api.Tests/

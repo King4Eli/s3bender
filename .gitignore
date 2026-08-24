@@ -1,10 +1,7 @@
-target/
-data/
-*.class
-.idea/
-*.iml
-.vscode/
-.DS_Store
+.env/*
+!.env/*.example
 
-# Contains real secrets for this environment - keep .env.example as the tracked template.
-.env
+# .NET build output (engine/)
+bin/
+obj/
+data/

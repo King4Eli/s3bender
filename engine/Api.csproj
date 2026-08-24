@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>S3Bender.Api</RootNamespace>
+    <UserSecretsId>s3bender-api</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Api.Tests/**" />
+    <Content Remove="Api.Tests/**" />
+    <EmbeddedResource Remove="Api.Tests/**" />
+    <None Remove="Api.Tests/**" />
+  </ItemGroup>
+
+</Project>

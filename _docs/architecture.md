@@ -52,6 +52,26 @@ A single server process exposes two credential-scoped APIs:
 
 See [auth-and-signing.md](auth-and-signing.md) for the exact byte-for-byte signing algorithm.
 
+## The console UI is a client, not a third API
+
+`engine/wwwroot/` is a small static single-page app served by the same process as the API,
+on a second Kestrel endpoint (`S3BENDER_FRONTEND_PORT`, default 8081) - both ports answer the
+exact same pipeline, so the console and the raw API are always same-origin. It has no privileged
+access: it signs its own `/buckets/**` requests client-side with the Web Crypto API using whatever
+access/secret key the person using it types in, exactly like any other client would have to. There
+is no server-side proxy or credential store sitting between the browser and the API - see the root
+README's "How the console UI talks to the Api".
+
+A middleware narrows what's reachable per port, but only in one direction: the console's own
+static assets (`/`, `/index.html`, `/app.js`, `/styles.css`) 404 on the plain API port (8080),
+since external API clients have no use for them. Every real API route - `/admin/**` included -
+deliberately stays reachable on **both** ports, because the console has a full Admin panel
+(create/list/delete/rotate buckets) as well as the object browser, and both call the API
+same-origin from whichever port served the page. This is a deployment convenience, not a protocol
+requirement - the console is just another client of the same API documented in api-reference.md. A
+reimplementation is free to serve it differently (a separate proxying service, a static site
+elsewhere, or dropped entirely) without touching the protocol.
+
 ## Storage layout
 
 ```

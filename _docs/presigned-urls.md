@@ -44,9 +44,10 @@ the signed string.
 - **Single-use restriction: none.** A presigned URL is valid for every matching request until it
   expires, not just the first one - the same as S3's presigned URLs. If you need one-time-use
   semantics, layer that on the application side (e.g. delete/rotate on first use).
-- **Not revocable individually.** The only way to invalidate a presigned URL early is to rotate
-  the bucket's secret key (which also invalidates every other outstanding presigned URL and header
-  credential for that bucket - there is currently no per-URL revocation list).
+- **Not revocable individually.** There is no per-URL revocation list, so a presigned URL is valid
+  for every matching request until it expires, full stop. To invalidate every outstanding
+  presigned URL (and header credential) for a bucket at once, without touching its objects, rotate
+  the bucket's key: `POST /admin/buckets/{bucket}/rotate` (admin-key only). See how-to-use.md.
 - **Bound to one bucket, one key, one method.** A presigned URL for `GET /a.txt` in bucket `demo`
   cannot be reused for `b.txt`, for `PUT`, or for any other bucket.
 - **`S3BENDER_PUBLIC_BASE_URL`** overrides the scheme/host/port used to build the URL, for

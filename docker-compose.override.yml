@@ -1,6 +1,6 @@
 name: s3bender
 services:
-  s3bender:
+  s3bender-engine:
     build:
       context: ./engine
       dockerfile: Dockerfile

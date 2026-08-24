@@ -19,8 +19,12 @@ needs the raw secret to recompute HMAC signatures for every authenticated reques
 encrypted (reversible) with a server-held master key, rather than hashed (irreversible) the way a
 login password would be.
 
-Losing the master key makes every bucket's secret key permanently unrecoverable - existing
-presigned URLs and stored credentials stop validating. Back up `S3BENDER_MASTER_KEY` accordingly.
+Losing the master key makes every bucket's *existing* secret key permanently unrecoverable -
+existing presigned URLs and stored credentials stop validating. It's not a dead end, though: a
+key-rotation endpoint (`POST /admin/buckets/{name}/rotate`, admin-key only) issues a fresh secret
+encrypted under whatever master key is currently set, without ever needing to decrypt the old one
+- so rotating every bucket under a replacement master key recovers all of them, objects untouched.
+See how-to-use.md. Back up `S3BENDER_MASTER_KEY` regardless - see deployment.md.
 
 ## 2. Object bytes (large, unstructured → filesystem)
 
@@ -29,6 +33,15 @@ Objects are not in the database at all. They live directly on disk at
 read from the filesystem, not stored redundantly. ETag = hex MD5 of the object's bytes (matches S3
 convention for non-multipart uploads, used here purely as an integrity fingerprint, not a security
 control).
+
+One piece of upload-supplied metadata *is* stored, since it can't be derived from the bytes: the
+`Content-Type` given on `PUT`. It lives as a small sidecar text file at
+`{storage root}/.meta/{bucket}/{key}` - deliberately outside `{bucket}/`, so it never appears in
+a bucket listing or counts toward "is this bucket empty" - and is replayed verbatim as the
+`Content-Type` response header on every future GET/HEAD of that key (falling back to
+`application/octet-stream` if no sidecar exists, e.g. for objects uploaded before this existed).
+This is what lets a presigned URL be dropped straight into an `<img>`/`<video>`/`<audio>` tag and
+render instead of download - see presigned-urls.md.
 
 A reimplementation is free to swap the embedded database for anything else (SQLite, Postgres, a
 JSON file, etcd) as long as it preserves: bucket name uniqueness, access key uniqueness, and the

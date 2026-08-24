@@ -28,8 +28,8 @@ Response `201`:
   "createdAt": "2026-08-23T21:44:33Z"
 }
 ```
-`secretKey` is returned **only here** - store it now, it cannot be retrieved again (only rotated
-by deleting and recreating the bucket, which also deletes its objects).
+`secretKey` is returned **only here** - store it now, it cannot be retrieved or reset again. See
+how-to-use.md for what your actual options are if you lose it.
 
 Errors: `409 BucketAlreadyExists`, `400 InvalidRequest` (bad name).
 
@@ -40,18 +40,32 @@ List buckets (no secrets). `200 [{ "name": "demo", "createdAt": "..." }, ...]`
 Delete a bucket. `204` on success. `409 BucketNotEmpty` if it still has objects - delete every
 object first. `404 NoSuchBucket` if it doesn't exist.
 
+### `POST /admin/buckets/{name}/rotate`
+Mint a new access/secret key pair for an existing bucket, replacing the old one. Objects are
+untouched - this only changes credentials. The old access/secret key (and any outstanding
+presigned URL signed with it) stops authenticating **immediately**. Response `200`: same shape as
+`POST /admin/buckets` (`name`, `accessKey`, `secretKey`, `createdAt` - the bucket's original
+creation time, unchanged). `secretKey` is shown only in this response, same rule as at creation.
+`404 NoSuchBucket` if it doesn't exist. This is also the recovery path if a bucket's secret key is
+lost - see how-to-use.md.
+
 ## Object API — requires bucket auth (header or presigned; see auth-and-signing.md)
 
 All routes below are under `/buckets/{bucket}`. `{key}` may contain `/` (nested "directories");
 it must not contain `..` or start with `/`.
 
 ### `PUT /buckets/{bucket}/objects/{key}`
-Upload (streamed to disk). Body = raw object bytes, any Content-Type. `200` with header
-`ETag: "<hex md5>"`. Overwrites an existing object at the same key.
+Upload (streamed to disk). Body = raw object bytes. The request's `Content-Type` is stored and
+replayed on every future GET/HEAD of this key - set it to the real MIME type (e.g. `image/png`)
+if you want the object to render inline (`<img>`, `<video>`, a presigned link opened directly)
+instead of falling back to `application/octet-stream`, which most browsers just download.
+`200` with header `ETag: "<hex md5>"`. Overwrites an existing object (and its stored
+Content-Type) at the same key.
 
 ### `GET /buckets/{bucket}/objects/{key}`
-Download. `200`, body = raw bytes, headers `Content-Length`, `ETag`. Accepts header auth or
-presigned query auth. `404 NoSuchKey` if missing.
+Download. `200`, body = raw bytes, headers `Content-Length`, `ETag`, `Content-Type` (whatever was
+set on upload, or `application/octet-stream` if none was). Accepts header auth or presigned query
+auth. `404 NoSuchKey` if missing.
 
 ### `HEAD /buckets/{bucket}/objects/{key}`
 Metadata only, no body. Same headers as GET. Accepts presigned query auth.
@@ -63,7 +77,7 @@ Metadata only, no body. Same headers as GET. Accepts presigned query auth.
 List objects, optionally filtered by key prefix. Header auth only.
 
 ```json
-[{ "key": "docs/a.txt", "size": 19, "lastModified": "2026-08-23T...", "etag": "3b5fa7..." }]
+[{ "key": "docs/a.txt", "size": 19, "lastModified": "2026-08-23T...", "etag": "3b5fa7...", "contentType": "text/plain" }]
 ```
 
 ### `POST /buckets/{bucket}/presign`

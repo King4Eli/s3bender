@@ -14,6 +14,12 @@ namespace S3Bender.Api.Middleware;
 /// Two accepted credential forms (see /_docs/auth-and-signing.md):
 ///   1. Authorization header: S3BENDER-HMAC-SHA256 AccessKey=..,Timestamp=..,Signature=..
 ///   2. Presigned query string (GET/PUT/HEAD only): ?AccessKey=..&Expires=..&Signature=..
+///
+/// A third path exists only for GET/HEAD: an object marked public (see ObjectStorageService.IsPublic,
+/// set via the `X-S3Bender-Public` upload header or `PUT /buckets/{bucket}/acl/{key}`) skips
+/// signature verification entirely, the same as S3's public-read ACL - see
+/// /_docs/public-and-private-objects.md. Every other verb, and every unauthenticated request for a
+/// private object, still requires a valid credential.
 /// </summary>
 public partial class BucketAuthMiddleware(RequestDelegate next)
 {
@@ -22,11 +28,14 @@ public partial class BucketAuthMiddleware(RequestDelegate next)
     [GeneratedRegex(@"^/buckets/([^/]+)(/.*)?$")]
     private static partial Regex BucketPathRegex();
 
+    [GeneratedRegex(@"^/buckets/([^/]+)/objects/(.+)$")]
+    private static partial Regex ObjectPathRegex();
+
     [GeneratedRegex(@"^S3BENDER-HMAC-SHA256\s+AccessKey=([^,]+),\s*Timestamp=([^,]+),\s*Signature=([0-9a-fA-F]+)$")]
     private static partial Regex AuthHeaderRegex();
 
     public async Task InvokeAsync(HttpContext context, BucketService bucketService, SignatureService signatureService,
-        IOptions<S3BenderOptions> options)
+        ObjectStorageService storageService, IOptions<S3BenderOptions> options)
     {
         var decodedPath = Uri.UnescapeDataString(context.Request.Path.Value ?? "");
         var pathMatch = BucketPathRegex().Match(decodedPath);
@@ -36,6 +45,18 @@ public partial class BucketAuthMiddleware(RequestDelegate next)
             return;
         }
         var bucketName = pathMatch.Groups[1].Value;
+        var method = context.Request.Method;
+
+        if (method is "GET" or "HEAD")
+        {
+            var publicBucket = await TryFindPublicObjectBucket(bucketName, decodedPath, bucketService, storageService);
+            if (publicBucket is not null)
+            {
+                context.Items[BucketItem] = publicBucket;
+                await next(context);
+                return;
+            }
+        }
 
         var queryAccessKey = context.Request.Query["AccessKey"].FirstOrDefault();
         var headerAccessKey = ExtractHeaderAccessKey(context);
@@ -49,7 +70,6 @@ public partial class BucketAuthMiddleware(RequestDelegate next)
         }
 
         var secret = bucketService.DecryptedSecretFor(bucket);
-        var method = context.Request.Method;
 
         var hasPresignParams = context.Request.Query.ContainsKey("AccessKey")
             && context.Request.Query.ContainsKey("Expires")
@@ -74,6 +94,24 @@ public partial class BucketAuthMiddleware(RequestDelegate next)
 
         context.Items[BucketItem] = bucket;
         await next(context);
+    }
+
+    /// <summary>
+    /// Looks up the bucket for a GET/HEAD on an object that exists and is marked public - callers
+    /// dispatch straight to `next(context)` with no signature check at all when this returns
+    /// non-null. Returns null for every other case (wrong path shape, private object, unknown
+    /// bucket), leaving the normal credential-checking flow in InvokeAsync to run instead.
+    /// </summary>
+    private static async Task<BucketEntity?> TryFindPublicObjectBucket(string bucketName, string decodedPath,
+        BucketService bucketService, ObjectStorageService storageService)
+    {
+        var objectMatch = ObjectPathRegex().Match(decodedPath);
+        if (!objectMatch.Success) return null;
+
+        var key = objectMatch.Groups[2].Value;
+        if (!storageService.IsPublic(bucketName, key)) return null;
+
+        return await bucketService.FindByNameAsync(bucketName);
     }
 
     private static bool VerifyPresigned(HttpContext context, string path, string secret, SignatureService signatureService)

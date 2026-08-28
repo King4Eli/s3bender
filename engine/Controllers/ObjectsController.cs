@@ -22,7 +22,10 @@ public class ObjectsController(ObjectStorageService storageService) : Controller
         // EnableBuffering() (Program.cs) lets us rewind - something earlier in the pipeline may
         // already have read past the start of the stream for a Content-Type it had no reason to.
         Request.Body.Position = 0;
-        var etag = await storageService.PutObjectAsync(bucket, key, Request.Body, Request.ContentType);
+        // Every PUT replaces visibility along with the bytes - re-uploading without this header
+        // resets the object to private, matching S3's own ACL-doesn't-carry-forward behavior.
+        var isPublic = string.Equals(Request.Headers["X-S3Bender-Public"].FirstOrDefault(), "true", StringComparison.OrdinalIgnoreCase);
+        var etag = await storageService.PutObjectAsync(bucket, key, Request.Body, Request.ContentType, isPublic);
         Response.Headers.ETag = $"\"{etag}\"";
         return Ok();
     }
@@ -33,6 +36,7 @@ public class ObjectsController(ObjectStorageService storageService) : Controller
         RequireAuthenticated(bucket);
         var summary = storageService.StatObject(bucket, key);
         Response.Headers.ETag = $"\"{summary.ETag}\"";
+        Response.Headers["X-S3Bender-Public"] = summary.Public ? "true" : "false";
         var stream = storageService.GetObject(bucket, key);
         return File(stream, summary.ContentType);
     }
@@ -43,6 +47,7 @@ public class ObjectsController(ObjectStorageService storageService) : Controller
         RequireAuthenticated(bucket);
         var summary = storageService.StatObject(bucket, key);
         Response.Headers.ETag = $"\"{summary.ETag}\"";
+        Response.Headers["X-S3Bender-Public"] = summary.Public ? "true" : "false";
         Response.ContentLength = summary.Size;
         Response.ContentType = summary.ContentType;
         return Ok();
@@ -61,6 +66,19 @@ public class ObjectsController(ObjectStorageService storageService) : Controller
     {
         RequireAuthenticated(bucket);
         return storageService.ListObjects(bucket, prefix);
+    }
+
+    /// <summary>
+    /// Flips an existing object's visibility without re-uploading it. Header auth only - unlike
+    /// GET/HEAD, this never accepts a presigned or public-object bypass, since it's the one
+    /// endpoint that can grant public access in the first place.
+    /// </summary>
+    [HttpPut("acl/{**key}")]
+    public IActionResult SetAcl([FromRoute] string bucket, [FromRoute] string key, [FromBody] SetAclRequest request)
+    {
+        RequireAuthenticated(bucket);
+        storageService.SetPublic(bucket, key, request.Public);
+        return Ok();
     }
 
     private void RequireAuthenticated(string bucket)

@@ -11,7 +11,9 @@ public record CreateBucketResponse(string Name, string AccessKey, string SecretK
 
 public record BucketSummary(string Name, DateTimeOffset CreatedAt);
 
-public record ObjectSummary(string Key, long Size, DateTimeOffset LastModified, string ETag, string ContentType);
+public record ObjectSummary(string Key, long Size, DateTimeOffset LastModified, string ETag, string ContentType, bool Public);
+
+public record SetAclRequest(bool Public);
 
 public record PresignRequest(
     [Required] string Key,

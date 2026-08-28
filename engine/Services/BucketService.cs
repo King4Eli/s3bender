@@ -81,5 +81,7 @@ public class BucketService(S3BenderDbContext db, CryptoService crypto, ObjectSto
     public Task<BucketEntity?> FindByAccessKeyAsync(string? accessKey) =>
         accessKey is null ? Task.FromResult<BucketEntity?>(null) : db.Buckets.FirstOrDefaultAsync(b => b.AccessKey == accessKey);
 
+    public async Task<BucketEntity?> FindByNameAsync(string name) => await db.Buckets.FindAsync(name);
+
     public string DecryptedSecretFor(BucketEntity bucket) => crypto.DecryptSecret(bucket.EncryptedSecretKey);
 }

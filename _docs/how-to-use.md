@@ -2,22 +2,29 @@
 
 Two ways to call s3bender: through the console UI (port 8081) if you just want to click around, or
 directly against the API (port 8080, also reachable on 8081) if you're writing a client. This page
-covers the direct-API path in bash and JavaScript - a runnable example of everything in
+covers the direct-API path with Node.js `fetch` - a runnable example of everything in
 auth-and-signing.md and api-reference.md strung together - plus what your actual options are if
 you lose a key.
 
 ## Calling the API from scratch
 
 Everything below assumes `S3BENDER_ADMIN_API_KEY` is in your environment and the Api is reachable
-at `http://localhost:8080`.
+at `http://localhost:8080`. Examples are plain Node.js (18+, for built-in `fetch` and the
+`node:crypto` module) - run them with `node`.
 
 **1. Create a bucket.** This is the only step that uses the admin key instead of a signature:
 
-```bash
-curl -s -X POST http://localhost:8080/admin/buckets \
-  -H "X-Admin-Api-Key: $S3BENDER_ADMIN_API_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"demo"}'
-# {"name":"demo","accessKey":"AK...","secretKey":"...","createdAt":"..."}
+```js
+const BASE = "http://localhost:8080";
+const ADMIN_KEY = process.env.S3BENDER_ADMIN_API_KEY;
+
+const createRes = await fetch(`${BASE}/admin/buckets`, {
+  method: "POST",
+  headers: { "X-Admin-Api-Key": ADMIN_KEY, "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "demo" }),
+});
+const bucket = await createRes.json();
+console.log(bucket); // { name: "demo", accessKey: "AK...", secretKey: "...", createdAt: "..." }
 ```
 
 Save `accessKey` and `secretKey` from the response - `secretKey` is never shown again.
@@ -25,28 +32,38 @@ Save `accessKey` and `secretKey` from the response - `secretKey` is never shown 
 **2. Sign a request.** Every `/buckets/{bucket}/**` call needs an `Authorization` header built
 from those two values. This is the same computation `engine/Services/SignatureService.cs`
 does server-side and the console's own `app.js` does client-side via Web Crypto - see
-auth-and-signing.md for the exact string-to-sign layout this reproduces:
+auth-and-signing.md for the exact string-to-sign layout this reproduces. Every other example on
+this page and in public-and-private-objects.md reuses this `authHeader` helper:
 
-```bash
-ACCESS_KEY="AK..."      # from step 1
-SECRET_KEY="..."        # from step 1
-sign() {
-  local method="$1" path="$2" ts="$3"
-  printf '%s\n%s\n%s' "$method" "$path" "$ts" \
-    | openssl dgst -sha256 -hmac "$SECRET_KEY" -hex | sed 's/^.* //'
+```js
+import crypto from "node:crypto";
+
+function sign(secretKey, method, path, timestamp) {
+  const stringToSign = `${method}\n${path}\n${timestamp}`;
+  return crypto.createHmac("sha256", secretKey).update(stringToSign).digest("hex");
+}
+
+function authHeader(accessKey, secretKey, method, path) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = sign(secretKey, method, path, timestamp);
+  return `S3BENDER-HMAC-SHA256 AccessKey=${accessKey},Timestamp=${timestamp},Signature=${signature}`;
 }
 ```
 
 **3. Upload an object:**
 
-```bash
-PATH1="/buckets/demo/objects/docs/hello.txt"
-TS=$(date +%s)
-SIG=$(sign PUT "$PATH1" "$TS")
-curl -X PUT "http://localhost:8080$PATH1" \
-  -H "Authorization: S3BENDER-HMAC-SHA256 AccessKey=$ACCESS_KEY,Timestamp=$TS,Signature=$SIG" \
-  -H "Content-Type: text/plain" \
-  --data-binary "hello s3bender"
+```js
+const { accessKey, secretKey } = bucket; // from step 1
+const path1 = "/buckets/demo/objects/docs/hello.txt";
+
+await fetch(`${BASE}${path1}`, {
+  method: "PUT",
+  headers: {
+    Authorization: authHeader(accessKey, secretKey, "PUT", path1),
+    "Content-Type": "text/plain",
+  },
+  body: "hello s3bender",
+});
 ```
 
 Set `Content-Type` to the real MIME type if you want the object to render inline later instead of
@@ -54,58 +71,70 @@ downloading - see api-reference.md.
 
 **4. Download it back:**
 
-```bash
-TS=$(date +%s)
-SIG=$(sign GET "$PATH1" "$TS")
-curl "http://localhost:8080$PATH1" \
-  -H "Authorization: S3BENDER-HMAC-SHA256 AccessKey=$ACCESS_KEY,Timestamp=$TS,Signature=$SIG"
+```js
+const getRes = await fetch(`${BASE}${path1}`, {
+  headers: { Authorization: authHeader(accessKey, secretKey, "GET", path1) },
+});
+console.log(await getRes.text()); // "hello s3bender"
 ```
 
 **5. Mint a presigned URL** (no signing needed to *use* it, just to request it):
 
-```bash
-PPATH="/buckets/demo/presign"
-TS=$(date +%s)
-SIG=$(sign POST "$PPATH" "$TS")
-curl -X POST "http://localhost:8080$PPATH" \
-  -H "Authorization: S3BENDER-HMAC-SHA256 AccessKey=$ACCESS_KEY,Timestamp=$TS,Signature=$SIG" \
-  -H "Content-Type: application/json" \
-  -d '{"key":"docs/hello.txt","method":"GET","expiresInSeconds":300}'
-# {"url":"http://localhost:8080/buckets/demo/objects/docs/hello.txt?AccessKey=...&Expires=...&Signature=...", ...}
+```js
+const presignPath = "/buckets/demo/presign";
+const presignRes = await fetch(`${BASE}${presignPath}`, {
+  method: "POST",
+  headers: {
+    Authorization: authHeader(accessKey, secretKey, "POST", presignPath),
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ key: "docs/hello.txt", method: "GET", expiresInSeconds: 300 }),
+});
+const { url } = await presignRes.json();
+// url = "http://localhost:8080/buckets/demo/objects/docs/hello.txt?AccessKey=...&Expires=...&Signature=..."
 ```
 
-That `url` works with a plain `curl "$url"` - no header at all - until it expires. See
+That `url` works with a plain `fetch(url)` - no header at all - until it expires. See
 presigned-urls.md.
+
+**Want a link that never expires instead?** Mark the object public rather than presigning it - see
+public-and-private-objects.md:
+
+```js
+await fetch(`${BASE}${path1}`, {
+  method: "PUT",
+  headers: {
+    Authorization: authHeader(accessKey, secretKey, "PUT", path1),
+    "Content-Type": "text/plain",
+    "X-S3Bender-Public": "true",
+  },
+  body: "hello s3bender",
+});
+
+// now works forever, with no Authorization header and no expiry:
+await fetch(`${BASE}${path1}`);
+```
 
 **Common mistake:** a clock more than `S3BENDER_CLOCK_SKEW_SECONDS` (default 900s) off wall-clock
 time produces a `403 SignatureMismatch` even with a correct secret - the timestamp is part of what
 gets signed, so an out-of-sync clock signs a value the server won't accept.
 
-## JavaScript: request a presigned upload, then upload from the browser
+## Browser: request a presigned upload from your backend, then upload directly
 
 The right split for a web app: your own trusted backend (which holds the bucket's secret key)
 requests the presigned URL; the browser only ever sees that one-time URL, never the secret. This
 is the same shape as the console's own `app.js`, just split across two sides of a network boundary
 instead of both happening client-side.
 
-**Backend (Node.js) - request a presigned PUT URL:**
+**Backend (Node.js) - request a presigned PUT URL**, reusing `authHeader` from step 2 above:
 
 ```js
-const crypto = require("crypto");
-
-function sign(secret, stringToSign) {
-  return crypto.createHmac("sha256", secret).update(stringToSign).digest("hex");
-}
-
 async function presignUpload(bucket, key, accessKey, secretKey) {
-  const rawPath = `/buckets/${bucket}/presign`;
-  const timestamp = Math.floor(Date.now() / 1000);
-  const signature = sign(secretKey, `POST\n${rawPath}\n${timestamp}`);
-
-  const res = await fetch(`http://localhost:8080${rawPath}`, {
+  const path = `/buckets/${bucket}/presign`;
+  const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: {
-      Authorization: `S3BENDER-HMAC-SHA256 AccessKey=${accessKey},Timestamp=${timestamp},Signature=${signature}`,
+      Authorization: authHeader(accessKey, secretKey, "POST", path),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ key, method: "PUT", expiresInSeconds: 300 }),
@@ -143,25 +172,28 @@ on `Content-Type`).
 If you'd rather have the *browser itself* sign requests directly against the API (no backend
 round-trip, at the cost of the browser needing to hold the bucket's secret key) - that's exactly
 what the console UI does; see `engine/wwwroot/app.js` for the complete Web Crypto
-(`crypto.subtle`) implementation of the same signing algorithm shown in bash above.
+(`crypto.subtle`) implementation of the same signing algorithm as the `sign`/`authHeader` helper
+above.
 
 ## Losing a key
 
 "I lost it" has a different answer depending on which key:
 
 **Admin key (`S3BENDER_ADMIN_API_KEY`)** - trivial. It's a config value, not derived from
-anything stored. Generate a new one (`openssl rand -base64 24`), update `.env/engine.env`, restart
-the Api. No data is affected; existing buckets and their credentials are untouched, since the
-admin key only gates `/admin/*`.
+anything stored. Generate a new one (e.g. `crypto.randomBytes(18).toString("base64")` in Node, or
+`openssl rand -base64 24`), update `.env/engine.env`, restart the Api. No data is affected;
+existing buckets and their credentials are untouched, since the admin key only gates `/admin/*`.
 
 **A bucket's secret key** - not recoverable (it's encrypted, not stored, and never shown twice -
 see data-model.md), but it doesn't need to be: anyone holding the *admin* key can mint the bucket
 a fresh one without touching its objects:
 
-```bash
-curl -X POST http://localhost:8080/admin/buckets/demo/rotate \
-  -H "X-Admin-Api-Key: $S3BENDER_ADMIN_API_KEY"
-# {"name":"demo","accessKey":"AK...","secretKey":"...","createdAt":"..."}   <- new pair, once
+```js
+const rotateRes = await fetch(`${BASE}/admin/buckets/demo/rotate`, {
+  method: "POST",
+  headers: { "X-Admin-Api-Key": ADMIN_KEY },
+});
+console.log(await rotateRes.json()); // { name: "demo", accessKey: "AK...", secretKey: "...", createdAt: "..." }   <- new pair, once
 ```
 
 This immediately invalidates the old access/secret key and every presigned URL signed with it -

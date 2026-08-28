@@ -26,6 +26,11 @@ anything in this directory; this page is the checklist that made that possible.
   every download silently reverts to `application/octet-stream`, which most browsers will
   download instead of render - breaking `<img>`/`<video>`/`<audio>` embeds and any client that
   relies on presigned URLs being directly embeddable.
+- **Public/private object visibility, defaulting to private** - see public-and-private-objects.md.
+  A public object's GET/HEAD must bypass signature verification entirely, not just accept a
+  no-op/always-valid signature - the whole point is a plain URL with no credential in it at all.
+  Get the default wrong (public unless marked private) and every object silently loses its
+  confidentiality on day one of a rewrite.
 - **Key rotation is a pure overwrite, not a read-modify-write of the old secret** - `rotate` must
   generate a new pair and encrypt it under whatever master key is *currently* configured without
   ever decrypting the old `EncryptedSecretKey`. This is what makes rotation double as master-key-

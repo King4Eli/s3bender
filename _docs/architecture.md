@@ -43,9 +43,14 @@ A single server process exposes two credential-scoped APIs:
    - **Presigned query string**: `?AccessKey=…&Expires=…&Signature=…`
      - used for GET/PUT/HEAD only, generated ahead of time by `POST /buckets/{bucket}/presign`
        (itself a header-authenticated call), and valid without any header at all until `Expires`.
+   - **No credential at all**, for GET/HEAD on an object marked public - see
+     [public-and-private-objects.md](public-and-private-objects.md). Every other verb still needs
+     one of the two forms above regardless of visibility.
 3. A single auth filter sits in front of every `/buckets/**` route, resolves the bucket from the
-   URL path, resolves the credential (header or query), verifies the HMAC signature, checks
-   expiry/clock-skew, and only then lets the request reach the object handler.
+   URL path and, for GET/HEAD, checks the target object's visibility first; a public object skips
+   straight through with no credential check at all. Otherwise it resolves the credential (header
+   or query), verifies the HMAC signature, checks expiry/clock-skew, and only then lets the request
+   reach the object handler.
 4. Object bytes are streamed straight to/from disk - the server never buffers a whole file in
    memory. Metadata (bucket name → keys) lives in a small embedded database; object bytes live in
    ordinary files.

@@ -60,25 +60,40 @@ replayed on every future GET/HEAD of this key - set it to the real MIME type (e.
 if you want the object to render inline (`<img>`, `<video>`, a presigned link opened directly)
 instead of falling back to `application/octet-stream`, which most browsers just download.
 `200` with header `ETag: "<hex md5>"`. Overwrites an existing object (and its stored
-Content-Type) at the same key.
+Content-Type and visibility) at the same key.
+
+Optional header `X-S3Bender-Public: true` marks the object public on upload (see
+[public-and-private-objects.md](public-and-private-objects.md)). Omitting it, or any value other
+than `true`, leaves the object private - this is the default, and re-uploading an existing object
+without the header resets it to private even if it was public before.
 
 ### `GET /buckets/{bucket}/objects/{key}`
 Download. `200`, body = raw bytes, headers `Content-Length`, `ETag`, `Content-Type` (whatever was
-set on upload, or `application/octet-stream` if none was). Accepts header auth or presigned query
-auth. `404 NoSuchKey` if missing.
+set on upload, or `application/octet-stream` if none was), `X-S3Bender-Public` (`true`/`false`).
+Accepts header auth or presigned query auth - or, if the object is public, **no auth at all**. See
+public-and-private-objects.md. `404 NoSuchKey` if missing.
 
 ### `HEAD /buckets/{bucket}/objects/{key}`
-Metadata only, no body. Same headers as GET. Accepts presigned query auth.
+Metadata only, no body. Same headers as GET, same auth rules (including the public-object bypass).
 
 ### `DELETE /buckets/{bucket}/objects/{key}`
-`204` on success (idempotent - deleting a missing key is not an error). Header auth only.
+`204` on success (idempotent - deleting a missing key is not an error). Header auth only, always -
+visibility never affects this.
 
 ### `GET /buckets/{bucket}/objects?prefix=<optional>`
 List objects, optionally filtered by key prefix. Header auth only.
 
 ```json
-[{ "key": "docs/a.txt", "size": 19, "lastModified": "2026-08-23T...", "etag": "3b5fa7...", "contentType": "text/plain" }]
+[{ "key": "docs/a.txt", "size": 19, "lastModified": "2026-08-23T...", "etag": "3b5fa7...", "contentType": "text/plain", "public": false }]
 ```
+
+### `PUT /buckets/{bucket}/acl/{key}`
+Change an existing object's visibility without re-uploading it. Header auth only, always - this is
+the one endpoint that can grant public access, so it never accepts the public-object bypass.
+
+Request: `{ "public": true }`
+
+`200` on success. `404 NoSuchKey` if the object doesn't exist.
 
 ### `POST /buckets/{bucket}/presign`
 Mint a presigned URL. Header auth only. See [presigned-urls.md](presigned-urls.md).

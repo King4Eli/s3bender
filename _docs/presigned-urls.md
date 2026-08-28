@@ -28,11 +28,11 @@ Response:
 
 ## Using one
 
-Just `curl`/`fetch`/browser-navigate the URL directly - no headers required:
+Just `fetch`/browser-navigate the URL directly - no headers required:
 
-```bash
-curl "$PRESIGNED_URL"                       # for a GET presign
-curl -X PUT --data-binary @file.pdf "$PRESIGNED_URL"   # for a PUT presign
+```js
+await fetch(presignedUrl);                                               // for a GET presign
+await fetch(presignedUrl, { method: "PUT", body: fileBufferOrBlob });    // for a PUT presign
 ```
 
 The method in the request must match the method the URL was signed for; sending a `PUT` to a
@@ -55,3 +55,11 @@ the signed string.
   public one. Set it to e.g. `https://files.example.com`.
 
 See [auth-and-signing.md](auth-and-signing.md) for the exact signature computation.
+
+## When you don't want expiry at all
+
+A presigned URL is deliberately temporary - a fresh one is minted (and signed) every time you call
+`/presign`, so it's not the right tool for a stable, cacheable link (e.g. behind a CDN, or dropped
+into a `<img src>` that should keep working indefinitely). For that, mark the object **public**
+instead - a plain, non-expiring URL, no signing involved at all. See
+[public-and-private-objects.md](public-and-private-objects.md).

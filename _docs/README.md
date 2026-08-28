@@ -13,11 +13,13 @@ another language - it already has once (see porting-guide.md). Read them in this
 3. [auth-and-signing.md](auth-and-signing.md) - the two credential types and the exact signing
    algorithm (byte-for-byte spec, language-independent).
 4. [presigned-urls.md](presigned-urls.md) - how presigned URLs are built and validated.
-5. [api-reference.md](api-reference.md) - every HTTP endpoint, request/response shapes, error codes.
-6. [how-to-use.md](how-to-use.md) - calling the API from scratch (a runnable signing example),
+5. [public-and-private-objects.md](public-and-private-objects.md) - the per-object visibility flag,
+   how to set it, and how to retrieve a private vs. a public object.
+6. [api-reference.md](api-reference.md) - every HTTP endpoint, request/response shapes, error codes.
+7. [how-to-use.md](how-to-use.md) - calling the API from scratch (a runnable signing example),
    and what to do if you lose a key.
-7. [deployment.md](deployment.md) - Docker/Compose, environment variables, operational notes.
-8. [porting-guide.md](porting-guide.md) - what to preserve if you reimplement this in another
+8. [deployment.md](deployment.md) - Docker/Compose, environment variables, operational notes.
+9. [porting-guide.md](porting-guide.md) - what to preserve if you reimplement this in another
    language/stack, and what's safe to change.
 
 The implementation is `engine/` (C# / ASP.NET Core 8) - see the root README for the exact

@@ -34,14 +34,21 @@ read from the filesystem, not stored redundantly. ETag = hex MD5 of the object's
 convention for non-multipart uploads, used here purely as an integrity fingerprint, not a security
 control).
 
-One piece of upload-supplied metadata *is* stored, since it can't be derived from the bytes: the
-`Content-Type` given on `PUT`. It lives as a small sidecar text file at
-`{storage root}/.meta/{bucket}/{key}` - deliberately outside `{bucket}/`, so it never appears in
-a bucket listing or counts toward "is this bucket empty" - and is replayed verbatim as the
-`Content-Type` response header on every future GET/HEAD of that key (falling back to
-`application/octet-stream` if no sidecar exists, e.g. for objects uploaded before this existed).
-This is what lets a presigned URL be dropped straight into an `<img>`/`<video>`/`<audio>` tag and
-render instead of download - see presigned-urls.md.
+Two pieces of upload-supplied metadata *are* stored, since neither can be derived from the bytes:
+the `Content-Type` given on `PUT`, and the object's public/private visibility (see
+public-and-private-objects.md). Both live together as a small JSON sidecar file at
+`{storage root}/.meta/{bucket}/{key}` - `{"contentType": "image/png", "public": false}` -
+deliberately outside `{bucket}/`, so it never appears in a bucket listing or counts toward "is this
+bucket empty". `contentType` is replayed verbatim as the `Content-Type` response header on every
+future GET/HEAD of that key (falling back to `application/octet-stream` if no sidecar exists, e.g.
+for objects uploaded before this existed). This is what lets a presigned URL - or a public object's
+plain URL - be dropped straight into an `<img>`/`<video>`/`<audio>` tag and render instead of
+download - see presigned-urls.md. `public` is what `BucketAuthMiddleware` checks to decide whether
+a GET/HEAD needs a valid signature at all.
+
+A sidecar written before the `public` field existed is a bare Content-Type string, not JSON; it's
+read back as `{contentType: <that string>, public: false}` rather than failing to parse, so
+pre-existing objects stay private by default instead of erroring or silently becoming public.
 
 A reimplementation is free to swap the embedded database for anything else (SQLite, Postgres, a
 JSON file, etcd) as long as it preserves: bucket name uniqueness, access key uniqueness, and the

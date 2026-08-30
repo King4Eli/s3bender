@@ -12,6 +12,10 @@ const store = {
   },
 };
 
+// Client-side view state for the objects list. The list API returns every key in one flat,
+// unpaginated array, so folder counts and paging are both computed here in the browser.
+const objectsView = { all: [], page: 1, pageSize: 25 };
+
 function toast(message, isError = false) {
   const el = $("toast");
   el.textContent = message;
@@ -90,7 +94,7 @@ async function refreshBuckets() {
       tr.innerHTML = `
         <td class="key">${escapeHtml(b.name)}${b.name === active ? ' <span class="badge">active</span>' : ""}</td>
         <td class="desc">${b.description ? escapeHtml(b.description) : '<span class="muted">-</span>'}</td>
-        <td class="num">${new Date(b.createdAt).toLocaleString()}</td>
+        <td class="num" title="${escapeHtml(new Date(b.createdAt).toLocaleString())}">${escapeHtml(formatDate(b.createdAt))}</td>
         <td class="actions">
           <div class="btn-row">
             <button class="ghost" data-action="use">Use</button>
@@ -206,6 +210,10 @@ function selectBucket(name) {
   }
   updateActiveBucketBadge();
   document.querySelector('#objects-table tbody').innerHTML = "";
+  objectsView.all = [];
+  objectsView.page = 1;
+  $("objects-summary").hidden = true;
+  $("objects-pager").hidden = true;
 }
 
 // ---- Bucket: objects ----
@@ -220,47 +228,101 @@ async function listObjects() {
     const objects = await api(`${rawPath}${query}`, {
       headers: await bucketAuthHeaders("GET", rawPath),
     });
-    const tbody = document.querySelector("#objects-table tbody");
-    tbody.innerHTML = "";
-    if (objects.length === 0) {
-      tbody.innerHTML = `<tr><td class="empty-state" colspan="6">No objects${prefix ? ` under "${escapeHtml(prefix)}"` : ""}.</td></tr>`;
-      return;
-    }
-    for (const o of objects) {
-      const tr = document.createElement("tr");
-      const publicUrl = `${location.origin}/buckets/${encodeURIComponent(bucket)}/objects/${encodeKeyPath(o.key)}`;
-      tr.innerHTML = `
-        <td class="key">${escapeHtml(o.key)}</td>
-        <td class="num">${formatBytes(o.size)}</td>
-        <td class="num">${new Date(o.lastModified).toLocaleString()}</td>
-        <td><span class="badge ${o.public ? "tag-public" : "tag-private"}">${o.public ? "public" : "private"}</span></td>
-        <td class="etag">${o.eTag}</td>
-        <td class="actions">
-          <div class="btn-row">
-            ${isPreviewable(o.contentType) ? '<button class="ghost" data-action="view">View</button>' : ""}
-            <button class="ghost" data-action="download">Download</button>
-            ${o.public
-              ? '<button class="ghost" data-action="copy-url">Copy URL</button><button class="ghost" data-action="make-private">Make private</button>'
-              : '<button class="ghost" data-action="presign">Presign link</button><button class="ghost" data-action="make-public">Make public</button>'}
-            <button class="danger" data-action="delete">Delete</button>
-          </div>
-        </td>`;
-      const on = (action, fn) => {
-        const btn = tr.querySelector(`[data-action="${action}"]`);
-        if (btn) btn.addEventListener("click", fn);
-      };
-      on("view", () => previewObject(o.key, o.contentType));
-      on("download", () => downloadObject(o.key));
-      on("presign", () => presignObject(o.key));
-      on("copy-url", () => copyText(publicUrl, "Public URL copied to clipboard"));
-      on("make-public", () => setObjectAcl(o.key, true));
-      on("make-private", () => setObjectAcl(o.key, false));
-      on("delete", () => deleteObject(o.key));
-      tbody.appendChild(tr);
-    }
+    objectsView.all = objects;
+    objectsView.page = 1;
+    renderObjects();
   } catch (err) {
     toast(`Failed to list objects: ${err.message}`, true);
   }
+}
+
+/**
+ * Counts the top level of the bucket the way S3 would with delimiter="/": a key with no slash
+ * is a top-level file, and everything before the first slash is a top-level "folder" (counted
+ * once, however many keys live under it). Also totals object count and bytes.
+ */
+function topLevelCounts(objects) {
+  const folders = new Set();
+  let files = 0;
+  let bytes = 0;
+  for (const o of objects) {
+    bytes += o.size;
+    const slash = o.key.indexOf("/");
+    if (slash === -1) files += 1;
+    else folders.add(o.key.slice(0, slash));
+  }
+  return { folders: folders.size, files, objects: objects.length, bytes };
+}
+
+function renderObjects() {
+  const { all, pageSize } = objectsView;
+  const { bucket } = currentBucketCreds();
+  const prefix = $("prefix-filter").value.trim();
+  const tbody = document.querySelector("#objects-table tbody");
+  const summary = $("objects-summary");
+  const pager = $("objects-pager");
+
+  const counts = topLevelCounts(all);
+  $("stat-folders").textContent = counts.folders;
+  $("stat-files").textContent = counts.files;
+  $("stat-objects").textContent = counts.objects;
+  $("stat-size").textContent = formatBytes(counts.bytes);
+  summary.hidden = false;
+
+  tbody.innerHTML = "";
+  if (all.length === 0) {
+    tbody.innerHTML = `<tr><td class="empty-state" colspan="6">No objects${prefix ? ` under "${escapeHtml(prefix)}"` : ""}.</td></tr>`;
+    pager.hidden = true;
+    return;
+  }
+
+  const pageCount = Math.max(1, Math.ceil(all.length / pageSize));
+  if (objectsView.page > pageCount) objectsView.page = pageCount;
+  const page = objectsView.page;
+  const start = (page - 1) * pageSize;
+  const slice = all.slice(start, start + pageSize);
+
+  for (const o of slice) {
+    const tr = document.createElement("tr");
+    const publicUrl = `${location.origin}/buckets/${encodeURIComponent(bucket)}/objects/${encodeKeyPath(o.key)}`;
+    const etag = o.eTag || "";
+    tr.innerHTML = `
+      <td class="key" title="${escapeHtml(o.key)}">${escapeHtml(o.key)}</td>
+      <td class="num">${formatBytes(o.size)}</td>
+      <td class="num" title="${escapeHtml(new Date(o.lastModified).toLocaleString())}">${escapeHtml(formatDate(o.lastModified))}</td>
+      <td><span class="badge ${o.public ? "tag-public" : "tag-private"}">${o.public ? "public" : "private"}</span></td>
+      <td class="etag"><code data-etag title="${escapeHtml(etag)} - click to copy">${escapeHtml(etag.slice(0, 10))}</code></td>
+      <td class="actions">
+        <div class="btn-row">
+          ${isPreviewable(o.contentType) ? '<button class="ghost" data-action="view">View</button>' : ""}
+          <button class="ghost" data-action="download">Download</button>
+          ${o.public
+            ? '<button class="ghost" data-action="copy-url">Copy URL</button><button class="ghost" data-action="make-private">Make private</button>'
+            : '<button class="ghost" data-action="presign">Presign link</button><button class="ghost" data-action="make-public">Make public</button>'}
+          <button class="danger" data-action="delete">Delete</button>
+        </div>
+      </td>`;
+    const on = (action, fn) => {
+      const btn = tr.querySelector(`[data-action="${action}"]`);
+      if (btn) btn.addEventListener("click", fn);
+    };
+    on("view", () => previewObject(o.key, o.contentType));
+    on("download", () => downloadObject(o.key));
+    on("presign", () => presignObject(o.key));
+    on("copy-url", () => copyText(publicUrl, "Public URL copied to clipboard"));
+    on("make-public", () => setObjectAcl(o.key, true));
+    on("make-private", () => setObjectAcl(o.key, false));
+    on("delete", () => deleteObject(o.key));
+    const etagEl = tr.querySelector("[data-etag]");
+    if (etagEl && etag) etagEl.addEventListener("click", () => copyText(etag, "ETag copied to clipboard"));
+    tbody.appendChild(tr);
+  }
+
+  $("pager-info").textContent = `${start + 1}–${start + slice.length} of ${all.length}`;
+  $("pager-pos").textContent = `Page ${page} / ${pageCount}`;
+  $("page-prev").disabled = page <= 1;
+  $("page-next").disabled = page >= pageCount;
+  pager.hidden = false;
 }
 
 async function uploadFile(file) {
@@ -425,6 +487,13 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+function formatDate(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "-";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function formatBytes(n) {
   if (n < 1024) return `${n} B`;
   const units = ["KB", "MB", "GB", "TB"];
@@ -449,6 +518,22 @@ $("create-bucket-form").addEventListener("submit", (e) => {
 
 $("refresh-buckets").addEventListener("click", refreshBuckets);
 $("list-objects").addEventListener("click", listObjects);
+
+$("page-prev").addEventListener("click", () => {
+  if (objectsView.page > 1) {
+    objectsView.page -= 1;
+    renderObjects();
+  }
+});
+$("page-next").addEventListener("click", () => {
+  objectsView.page += 1;
+  renderObjects();
+});
+$("page-size").addEventListener("change", (e) => {
+  objectsView.pageSize = parseInt(e.target.value, 10) || 25;
+  objectsView.page = 1;
+  renderObjects();
+});
 $("dialog-close").addEventListener("click", () => $("secret-dialog").close());
 $("preview-close").addEventListener("click", () => {
   $("preview-dialog").close();

@@ -85,11 +85,56 @@
         </label>
       </div>
 
+      <div id="objects-summary" class="stats" hidden>
+        <div class="stat">
+          <span class="stat-label">Top-level folders</span>
+          <span class="stat-value" id="stat-folders">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Top-level files</span>
+          <span class="stat-value" id="stat-files">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Objects (total)</span>
+          <span class="stat-value" id="stat-objects">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Total size</span>
+          <span class="stat-value" id="stat-size">0 B</span>
+        </div>
+      </div>
+
       <div class="table-wrap">
         <table id="objects-table">
+          <colgroup>
+            <col class="col-key" />
+            <col class="col-size" />
+            <col class="col-modified" />
+            <col class="col-access" />
+            <col class="col-etag" />
+            <col class="col-actions" />
+          </colgroup>
           <thead><tr><th>Key</th><th>Size</th><th>Modified</th><th>Access</th><th>ETag</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
+      </div>
+
+      <div id="objects-pager" class="pager" hidden>
+        <span class="pager-info" id="pager-info"></span>
+        <div class="pager-controls">
+          <span class="pager-size">
+            Rows
+            <select id="page-size">
+              <option>10</option>
+              <option selected>25</option>
+              <option>50</option>
+              <option>100</option>
+            </select>
+          </span>
+          <button id="page-prev" class="secondary sm" type="button">&lsaquo; Prev</button>
+          <span class="pager-pos" id="pager-pos"></span>
+          <button id="page-next" class="secondary sm" type="button">Next &rsaquo;</button>
+        </div>
       </div>
     </section>
   </main>

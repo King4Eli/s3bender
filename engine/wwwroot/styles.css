@@ -37,6 +37,8 @@
 
 * { box-sizing: border-box; }
 
+[hidden] { display: none !important; }
+
 html { -webkit-text-size-adjust: 100%; }
 
 body {
@@ -87,7 +89,7 @@ main {
   gap: 1.5rem;
   padding: 1.5rem 2rem 3rem;
   align-items: start;
-  max-width: 1400px;
+  max-width: 1790px;
   margin: 0 auto;
 }
 
@@ -310,6 +312,44 @@ button.sm { padding: 0.3rem 0.55rem; font-size: 0.76rem; }
 .upload label { margin-bottom: 0.75rem; }
 .upload label:last-child { margin-bottom: 0; }
 
+/* ---- object stats ---- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.stat-label {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stat-value {
+  font-size: 1.15rem;
+  font-weight: 660;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+@media (max-width: 560px) {
+  .stats { grid-template-columns: repeat(2, 1fr); }
+}
+
 /* ---- tables ---- */
 
 .table-wrap {
@@ -324,6 +364,81 @@ table {
   border-collapse: collapse;
   font-size: 0.82rem;
 }
+
+#objects-table {
+  table-layout: fixed;
+  min-width: 660px;
+}
+
+#objects-table .col-key { width: 30%; }
+#objects-table .col-size { width: 9%; }
+#objects-table .col-modified { width: 18%; }
+#objects-table .col-access { width: 10%; }
+#objects-table .col-etag { width: 12%; }
+#objects-table .col-actions { width: 21%; }
+
+#objects-table td.key,
+#objects-table td.num {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+}
+
+#objects-table td.etag code {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+#objects-table td.etag code:hover { border-color: var(--border-strong); color: var(--text); }
+
+#objects-table td.actions { white-space: normal; width: auto; }
+#objects-table td.actions .btn-row { flex-wrap: wrap; justify-content: flex-end; gap: 0.3rem; }
+
+/* ---- pagination ---- */
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.pager-controls { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+
+.pager-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.pager select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.4rem;
+  font-family: var(--font);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.pager-pos { font-variant-numeric: tabular-nums; min-width: 6.5rem; text-align: center; }
+
+.pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+.pager button:disabled:hover { background: var(--panel-2); border-color: var(--border-strong); }
 
 thead th {
   position: sticky;

@@ -80,15 +80,23 @@ async function refreshBuckets() {
     const buckets = await api("/admin/buckets", { headers: { "X-Admin-Api-Key": adminKey } });
     const tbody = document.querySelector("#buckets-table tbody");
     tbody.innerHTML = "";
+    if (buckets.length === 0) {
+      tbody.innerHTML = `<tr><td class="empty-state" colspan="4">No buckets yet - create one above.</td></tr>`;
+      return;
+    }
+    const active = $("bucket-name").value.trim();
     for (const b of buckets) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${escapeHtml(b.name)}</td>
-        <td>${new Date(b.createdAt).toLocaleString()}</td>
-        <td>
-          <button data-action="use">Use</button>
-          <button data-action="rotate">Rotate keys</button>
-          <button data-action="delete">Delete</button>
+        <td class="key">${escapeHtml(b.name)}${b.name === active ? ' <span class="badge">active</span>' : ""}</td>
+        <td class="desc">${b.description ? escapeHtml(b.description) : '<span class="muted">-</span>'}</td>
+        <td class="num">${new Date(b.createdAt).toLocaleString()}</td>
+        <td class="actions">
+          <div class="btn-row">
+            <button class="ghost" data-action="use">Use</button>
+            <button class="ghost" data-action="rotate">Rotate keys</button>
+            <button class="danger" data-action="delete">Delete</button>
+          </div>
         </td>`;
       tr.querySelector('[data-action="use"]').addEventListener("click", () => selectBucket(b.name));
       tr.querySelector('[data-action="rotate"]').addEventListener("click", () => rotateBucketKey(b.name));
@@ -115,6 +123,7 @@ async function rotateBucketKey(name) {
       headers: { "X-Admin-Api-Key": adminKey },
     });
     $("secret-dialog-title").textContent = "Keys rotated";
+    $("dialog-bucket-name").value = name;
     $("dialog-access-key").value = bucket.accessKey;
     $("dialog-secret-key").value = bucket.secretKey;
     $("secret-dialog").showModal();
@@ -132,16 +141,17 @@ async function rotateBucketKey(name) {
   }
 }
 
-async function createBucket(name) {
+async function createBucket(name, description) {
   const adminKey = $("admin-key").value.trim();
   if (!adminKey) return toast("Enter the admin API key first", true);
   try {
     const bucket = await api("/admin/buckets", {
       method: "POST",
       headers: { "X-Admin-Api-Key": adminKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(description ? { name, description } : { name }),
     });
     $("secret-dialog-title").textContent = "Bucket created";
+    $("dialog-bucket-name").value = bucket.name;
     $("dialog-access-key").value = bucket.accessKey;
     $("dialog-secret-key").value = bucket.secretKey;
     $("secret-dialog").showModal();
@@ -175,6 +185,18 @@ async function deleteBucket(name) {
   }
 }
 
+function updateActiveBucketBadge() {
+  const name = $("bucket-name").value.trim();
+  const badge = $("active-bucket-badge");
+  if (name) {
+    badge.textContent = name;
+    badge.classList.remove("empty");
+  } else {
+    badge.textContent = "none selected";
+    badge.classList.add("empty");
+  }
+}
+
 function selectBucket(name) {
   $("bucket-name").value = name;
   const saved = store.bucketCreds.get(name);
@@ -182,6 +204,7 @@ function selectBucket(name) {
     $("access-key").value = saved.accessKey;
     $("secret-key").value = saved.secretKey;
   }
+  updateActiveBucketBadge();
   document.querySelector('#objects-table tbody').innerHTML = "";
 }
 
@@ -199,27 +222,42 @@ async function listObjects() {
     });
     const tbody = document.querySelector("#objects-table tbody");
     tbody.innerHTML = "";
+    if (objects.length === 0) {
+      tbody.innerHTML = `<tr><td class="empty-state" colspan="6">No objects${prefix ? ` under "${escapeHtml(prefix)}"` : ""}.</td></tr>`;
+      return;
+    }
     for (const o of objects) {
       const tr = document.createElement("tr");
+      const publicUrl = `${location.origin}/buckets/${encodeURIComponent(bucket)}/objects/${encodeKeyPath(o.key)}`;
       tr.innerHTML = `
-        <td>${escapeHtml(o.key)}</td>
-        <td>${formatBytes(o.size)}</td>
-        <td>${new Date(o.lastModified).toLocaleString()}</td>
-        <td class="etag">${o.etag}</td>
-        <td>
-          ${isPreviewable(o.contentType) ? '<button data-action="view">View</button>' : ""}
-          <button data-action="download">Download</button>
-          <button data-action="presign">Presign link</button>
-          <button data-action="delete">Delete</button>
+        <td class="key">${escapeHtml(o.key)}</td>
+        <td class="num">${formatBytes(o.size)}</td>
+        <td class="num">${new Date(o.lastModified).toLocaleString()}</td>
+        <td><span class="badge ${o.public ? "tag-public" : "tag-private"}">${o.public ? "public" : "private"}</span></td>
+        <td class="etag">${o.eTag}</td>
+        <td class="actions">
+          <div class="btn-row">
+            ${isPreviewable(o.contentType) ? '<button class="ghost" data-action="view">View</button>' : ""}
+            <button class="ghost" data-action="download">Download</button>
+            ${o.public
+              ? '<button class="ghost" data-action="copy-url">Copy URL</button><button class="ghost" data-action="make-private">Make private</button>'
+              : '<button class="ghost" data-action="presign">Presign link</button><button class="ghost" data-action="make-public">Make public</button>'}
+            <button class="danger" data-action="delete">Delete</button>
+          </div>
         </td>`;
-      const viewBtn = tr.querySelector('[data-action="view"]');
-      if (viewBtn) viewBtn.addEventListener("click", () => previewObject(o.key, o.contentType));
-      tr.querySelector('[data-action="download"]').addEventListener("click", () => downloadObject(o.key));
-      tr.querySelector('[data-action="presign"]').addEventListener("click", () => presignObject(o.key));
-      tr.querySelector('[data-action="delete"]').addEventListener("click", () => deleteObject(o.key));
+      const on = (action, fn) => {
+        const btn = tr.querySelector(`[data-action="${action}"]`);
+        if (btn) btn.addEventListener("click", fn);
+      };
+      on("view", () => previewObject(o.key, o.contentType));
+      on("download", () => downloadObject(o.key));
+      on("presign", () => presignObject(o.key));
+      on("copy-url", () => copyText(publicUrl, "Public URL copied to clipboard"));
+      on("make-public", () => setObjectAcl(o.key, true));
+      on("make-private", () => setObjectAcl(o.key, false));
+      on("delete", () => deleteObject(o.key));
       tbody.appendChild(tr);
     }
-    if (objects.length === 0) toast("No objects found");
   } catch (err) {
     toast(`Failed to list objects: ${err.message}`, true);
   }
@@ -228,19 +266,56 @@ async function listObjects() {
 async function uploadFile(file) {
   const { bucket } = currentBucketCreds();
   if (!bucket) return toast("Enter a bucket name first", true);
+  const makePublic = $("upload-public").checked;
   const rawPath = `/buckets/${bucket}/objects/${file.name}`;
   try {
+    const headers = {
+      ...(await bucketAuthHeaders("PUT", rawPath)),
+      "Content-Type": file.type || "application/octet-stream",
+    };
+    if (makePublic) headers["X-S3Bender-Public"] = "true";
     const res = await fetch(`/buckets/${encodeURIComponent(bucket)}/objects/${encodeKeyPath(file.name)}`, {
       method: "PUT",
-      headers: { ...(await bucketAuthHeaders("PUT", rawPath)), "Content-Type": file.type || "application/octet-stream" },
+      headers,
       body: file,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    toast(`Uploaded "${file.name}"`);
+    toast(`Uploaded "${file.name}"${makePublic ? " (public)" : ""}`);
     $("file-input").value = "";
     await listObjects();
   } catch (err) {
     toast(`Upload failed: ${err.message}`, true);
+  }
+}
+
+/**
+ * Flips an existing object's visibility via PUT /buckets/{bucket}/acl/{key} - no re-upload.
+ * Public objects are readable at their plain URL with no credential; private is the default.
+ */
+async function setObjectAcl(key, makePublic) {
+  const { bucket } = currentBucketCreds();
+  if (!bucket) return toast("Enter a bucket name first", true);
+  const rawPath = `/buckets/${bucket}/acl/${key}`;
+  try {
+    const res = await fetch(`/buckets/${encodeURIComponent(bucket)}/acl/${encodeKeyPath(key)}`, {
+      method: "PUT",
+      headers: { ...(await bucketAuthHeaders("PUT", rawPath)), "Content-Type": "application/json" },
+      body: JSON.stringify({ public: makePublic }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    toast(`"${key}" is now ${makePublic ? "public" : "private"}`);
+    await listObjects();
+  } catch (err) {
+    toast(`Failed to change visibility: ${err.message}`, true);
+  }
+}
+
+async function copyText(text, successMessage) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(successMessage);
+  } catch {
+    toast(text);
   }
 }
 
@@ -366,8 +441,10 @@ $("admin-key").addEventListener("change", (e) => store.adminKey.set(e.target.val
 $("create-bucket-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const name = $("new-bucket-name").value.trim();
-  if (name) createBucket(name);
+  const description = $("new-bucket-description").value.trim();
+  if (name) createBucket(name, description);
   $("new-bucket-name").value = "";
+  $("new-bucket-description").value = "";
 });
 
 $("refresh-buckets").addEventListener("click", refreshBuckets);
@@ -378,6 +455,7 @@ $("preview-close").addEventListener("click", () => {
   $("preview-body").innerHTML = ""; // stop any playing video/audio
 });
 
+$("bucket-name").addEventListener("input", updateActiveBucketBadge);
 $("bucket-name").addEventListener("change", (e) => {
   const saved = store.bucketCreds.get(e.target.value.trim());
   if (saved) {
@@ -394,5 +472,7 @@ $("file-input").addEventListener("change", (e) => {
 if (!crypto.subtle) {
   toast("Web Crypto (crypto.subtle) is unavailable - this page must be served over HTTPS or localhost.", true);
 }
+
+updateActiveBucketBadge();
 
 if (store.adminKey.get()) refreshBuckets();

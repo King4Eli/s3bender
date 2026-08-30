@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using S3Bender.Api.Data;
 using S3Bender.Api.Dtos;
@@ -63,7 +64,19 @@ var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
 {
-    scope.ServiceProvider.GetRequiredService<S3BenderDbContext>().Database.EnsureCreated();
+    var database = scope.ServiceProvider.GetRequiredService<S3BenderDbContext>().Database;
+    database.EnsureCreated();
+    // EnsureCreated() only ever creates a brand-new schema - it never alters an existing one. For
+    // columns added after a DB was first created, patch them in by hand; SQLite ADD COLUMN is a
+    // cheap metadata-only change. (This project deliberately doesn't carry EF migrations.)
+    foreach (var ddl in new[]
+             {
+                 "ALTER TABLE \"Buckets\" ADD COLUMN \"Description\" TEXT NULL",
+             })
+    {
+        try { database.ExecuteSqlRaw(ddl); }
+        catch (SqliteException) { /* column already present - fresh DBs get it from EnsureCreated */ }
+    }
 }
 
 // Eagerly resolve so a missing/invalid S3BENDER_MASTER_KEY fails startup immediately, rather than

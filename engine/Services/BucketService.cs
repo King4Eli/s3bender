@@ -7,7 +7,7 @@ namespace S3Bender.Api.Services;
 
 public class BucketService(S3BenderDbContext db, CryptoService crypto, ObjectStorageService storage)
 {
-    public async Task<CreateBucketResponse> CreateBucketAsync(string name)
+    public async Task<CreateBucketResponse> CreateBucketAsync(string name, string? description = null)
     {
         if (await db.Buckets.AnyAsync(b => b.Name == name))
             throw ApiException.Conflict("BucketAlreadyExists", $"Bucket '{name}' already exists");
@@ -15,6 +15,7 @@ public class BucketService(S3BenderDbContext db, CryptoService crypto, ObjectSto
         var accessKey = crypto.GenerateAccessKey();
         var secretKey = crypto.GenerateSecretKey();
         var now = DateTimeOffset.UtcNow;
+        var trimmedDescription = string.IsNullOrWhiteSpace(description) ? null : description.Trim();
 
         db.Buckets.Add(new BucketEntity
         {
@@ -22,6 +23,7 @@ public class BucketService(S3BenderDbContext db, CryptoService crypto, ObjectSto
             AccessKey = accessKey,
             EncryptedSecretKey = crypto.EncryptSecret(secretKey),
             CreatedAt = now,
+            Description = trimmedDescription,
         });
 
         try
@@ -35,7 +37,7 @@ public class BucketService(S3BenderDbContext db, CryptoService crypto, ObjectSto
             throw;
         }
 
-        return new CreateBucketResponse(name, accessKey, secretKey, now);
+        return new CreateBucketResponse(name, accessKey, secretKey, now, trimmedDescription);
     }
 
     /// <summary>
@@ -56,7 +58,7 @@ public class BucketService(S3BenderDbContext db, CryptoService crypto, ObjectSto
         entity.EncryptedSecretKey = crypto.EncryptSecret(secretKey);
         await db.SaveChangesAsync();
 
-        return new CreateBucketResponse(entity.Name, accessKey, secretKey, entity.CreatedAt);
+        return new CreateBucketResponse(entity.Name, accessKey, secretKey, entity.CreatedAt, entity.Description);
     }
 
     public async Task DeleteBucketAsync(string name)
@@ -73,7 +75,7 @@ public class BucketService(S3BenderDbContext db, CryptoService crypto, ObjectSto
     }
 
     public async Task<List<BucketSummary>> ListBucketsAsync() =>
-        await db.Buckets.OrderBy(b => b.Name).Select(b => new BucketSummary(b.Name, b.CreatedAt)).ToListAsync();
+        await db.Buckets.OrderBy(b => b.Name).Select(b => new BucketSummary(b.Name, b.CreatedAt, b.Description)).ToListAsync();
 
     public async Task<BucketEntity> RequireBucketAsync(string name) =>
         await db.Buckets.FindAsync(name) ?? throw ApiException.NotFound("NoSuchBucket", $"Bucket '{name}' does not exist");

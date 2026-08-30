@@ -16,7 +16,7 @@ public class AdminController(BucketService bucketService) : ControllerBase
     [HttpPost]
     public async Task<ActionResult<CreateBucketResponse>> CreateBucket([FromBody] CreateBucketRequest request)
     {
-        var response = await bucketService.CreateBucketAsync(request.Name);
+        var response = await bucketService.CreateBucketAsync(request.Name, request.Description);
         return StatusCode(201, response);
     }
 

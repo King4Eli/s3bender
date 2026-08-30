@@ -7,6 +7,10 @@ public class BucketEntity
     [Key, MaxLength(63)]
     public string Name { get; set; } = default!;
 
+    /// <summary>Optional free-text note set at creation time; purely for humans browsing the console.</summary>
+    [MaxLength(200)]
+    public string? Description { get; set; }
+
     [Required, MaxLength(64)]
     public string AccessKey { get; set; } = default!;
 

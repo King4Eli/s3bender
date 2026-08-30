@@ -1,7 +1,7 @@
 name: s3bender
 services:
-  s3bender-engine:
-    container_name: s3bender-engine
+  s3bender:
+    container_name: s3bender
     image: s3bender-engine:latest
     ports:
       - "8080:8080" #api

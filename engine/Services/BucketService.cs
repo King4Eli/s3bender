@@ -69,9 +69,26 @@ public class BucketService(S3BenderDbContext db, CryptoService crypto, ObjectSto
         if (!storage.IsBucketEmpty(name))
             throw ApiException.Conflict("BucketNotEmpty", $"Bucket '{name}' is not empty");
 
+        // The bucket is empty on disk, so there should be no index rows either - clear them anyway
+        // so a stale row can never outlive its bucket (and block a same-name recreate's listing).
+        await db.Objects.Where(o => o.Bucket == name).ExecuteDeleteAsync();
         db.Buckets.Remove(entity);
         await db.SaveChangesAsync();
         storage.RemoveBucketDirectory(name);
+    }
+
+    /// <summary>
+    /// Rebuilds the object index for an existing bucket from its on-disk bytes and sidecars
+    /// (<c>force: true</c> - re-stat and re-hash every file). Used by
+    /// <c>POST /admin/buckets/{name}/reindex</c> to migrate a bucket that predates the index or to
+    /// repair drift after files were added or removed out of band.
+    /// </summary>
+    public async Task<ReindexResponse> ReindexBucketAsync(string name)
+    {
+        _ = await db.Buckets.FindAsync(name)
+            ?? throw ApiException.NotFound("NoSuchBucket", $"Bucket '{name}' does not exist");
+        var indexed = await storage.ReindexBucketAsync(name, force: true);
+        return new ReindexResponse(name, indexed);
     }
 
     public async Task<List<BucketSummary>> ListBucketsAsync() =>

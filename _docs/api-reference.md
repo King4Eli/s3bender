@@ -49,6 +49,17 @@ creation time, unchanged). `secretKey` is shown only in this response, same rule
 `404 NoSuchBucket` if it doesn't exist. This is also the recovery path if a bucket's secret key is
 lost - see how-to-use.md.
 
+### `POST /admin/buckets/{name}/reindex`
+Rebuild the bucket's object index from what's on disk - walks the bucket directory, re-stats and
+re-hashes every file, and reconciles the index rows (adds missing, refreshes changed, drops rows
+whose file is gone). Run it once for a bucket that predates the index, or after adding/removing
+object files out of band. Cost scales with the bucket's total size (every byte is hashed); safe to
+re-run. Response `200 { "bucket": "demo", "indexed": 1423 }` - `indexed` counts rows written or
+removed; since this endpoint re-hashes unconditionally, that's every object file plus any stale
+rows dropped. `404 NoSuchBucket` if it doesn't exist. The server also runs a non-destructive
+version of this in the background at startup (which only touches rows that are actually missing or
+changed), so a fresh deployment picks up pre-existing buckets on its own.
+
 ## Object API — requires bucket auth (header or presigned; see auth-and-signing.md)
 
 All routes below are under `/buckets/{bucket}`. `{key}` may contain `/` (nested "directories");
@@ -80,12 +91,43 @@ Metadata only, no body. Same headers as GET, same auth rules (including the publ
 `204` on success (idempotent - deleting a missing key is not an error). Header auth only, always -
 visibility never affects this.
 
-### `GET /buckets/{bucket}/objects?prefix=<optional>`
-List objects, optionally filtered by key prefix. Header auth only.
+### `GET /buckets/{bucket}/objects?prefix=&limit=&cursor=`
+List one page of objects, ordered by key. Header auth only. Served from the object index (see
+data-model.md), not a directory scan.
+
+Query params (all optional):
+- `prefix` - only keys starting with this string.
+- `limit` - max objects on the page. Default and hard cap **1000** (S3's max-keys); values outside
+  `1..1000` are clamped.
+- `cursor` - continuation marker. Pass back the previous response's `nextCursor` to get the next
+  page. It is just the last key of that page; the server returns keys strictly greater than it.
+
+Response `200`:
+```json
+{
+  "objects": [
+    { "key": "docs/a.txt", "size": 19, "lastModified": "2026-08-23T...", "etag": "3b5fa7...", "contentType": "text/plain", "public": false }
+  ],
+  "isTruncated": true,
+  "nextCursor": "docs/a.txt",
+  "keyCount": 1
+}
+```
+`isTruncated` is true when more objects match beyond this page; `nextCursor` is non-null exactly
+then. `keyCount` is the number of objects on **this page**, not in the bucket.
+
+An `etag` may be an empty string for a brief window after a server upgrade or an out-of-band file
+change, until the background reindex (or the next `HEAD`/`GET` of that object) fills it in.
+
+### `GET /buckets/{bucket}/stats?prefix=<optional>`
+Whole-bucket (or whole-prefix) totals, from the index in one query. Header auth only.
 
 ```json
-[{ "key": "docs/a.txt", "size": 19, "lastModified": "2026-08-23T...", "etag": "3b5fa7...", "contentType": "text/plain", "public": false }]
+{ "objects": 1423, "totalBytes": 90210411, "topLevelFolders": 12, "topLevelFiles": 3 }
 ```
+`topLevelFolders`/`topLevelFiles` count the bucket the way S3 would with `delimiter="/"`: a key
+with no `/` is a top-level file; everything before the first `/` is a top-level folder, counted
+once however many keys live under it.
 
 ### `PUT /buckets/{bucket}/acl/{key}`
 Change an existing object's visibility without re-uploading it. Header auth only, always - this is

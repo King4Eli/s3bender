@@ -32,11 +32,16 @@ builder.Services.Configure<S3BenderOptions>(options =>
 var dbPath = Environment.GetEnvironmentVariable("S3BENDER_DB_PATH") ?? "./data/db/s3bender.db";
 var fullDbPath = Path.GetFullPath(dbPath);
 Directory.CreateDirectory(Path.GetDirectoryName(fullDbPath)!);
-builder.Services.AddDbContext<S3BenderDbContext>(opts => opts.UseSqlite($"Data Source={fullDbPath}"));
+// Default Timeout drives Microsoft.Data.Sqlite's busy-retry loop - without it, a write that
+// collides with the background reindex's write (SQLite is single-writer) fails immediately with
+// SQLITE_BUSY instead of waiting its turn.
+builder.Services.AddDbContext<S3BenderDbContext>(opts => opts.UseSqlite($"Data Source={fullDbPath};Default Timeout=30"));
 
 builder.Services.AddSingleton<CryptoService>();
 builder.Services.AddSingleton<SignatureService>();
-builder.Services.AddSingleton<ObjectStorageService>();
+// Scoped, not singleton: it now writes the per-request DbContext (the object index) alongside the
+// filesystem on every PUT/DELETE/ACL change.
+builder.Services.AddScoped<ObjectStorageService>();
 builder.Services.AddScoped<BucketService>();
 builder.Services.AddScoped<PresignService>();
 
@@ -72,12 +77,51 @@ using (var scope = app.Services.CreateScope())
     foreach (var ddl in new[]
              {
                  "ALTER TABLE \"Buckets\" ADD COLUMN \"Description\" TEXT NULL",
+                 // Object index (see ObjectStorageService / data-model.md). IF NOT EXISTS makes this
+                 // a no-op once EnsureCreated has built it on a fresh DB, or once a prior boot added
+                 // it to an older one. The column shapes match EF's model mapping for ObjectEntity.
+                 """
+                 CREATE TABLE IF NOT EXISTS "Objects" (
+                     "Bucket" TEXT NOT NULL,
+                     "Key" TEXT NOT NULL,
+                     "Size" INTEGER NOT NULL,
+                     "LastModified" TEXT NOT NULL,
+                     "ETag" TEXT NULL,
+                     "ContentType" TEXT NULL,
+                     "Public" INTEGER NOT NULL,
+                     CONSTRAINT "PK_Objects" PRIMARY KEY ("Bucket", "Key")
+                 )
+                 """,
              })
     {
         try { database.ExecuteSqlRaw(ddl); }
-        catch (SqliteException) { /* column already present - fresh DBs get it from EnsureCreated */ }
+        catch (SqliteException) { /* already present - fresh DBs get it from EnsureCreated */ }
     }
 }
+
+// Bring the object index up to date with what's on disk, in the background so a large bucket's
+// first-ever hash pass doesn't block startup. Non-forced: buckets already indexed cost only a
+// directory walk. New uploads index themselves inline, so this only has real work to do after an
+// upgrade from a pre-index build or an out-of-band change to the data volume.
+_ = Task.Run(async () =>
+{
+    using var scope = app.Services.CreateScope();
+    var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("ObjectIndex");
+    try
+    {
+        var db = scope.ServiceProvider.GetRequiredService<S3BenderDbContext>();
+        var storage = scope.ServiceProvider.GetRequiredService<ObjectStorageService>();
+        foreach (var name in await db.Buckets.Select(b => b.Name).ToListAsync())
+        {
+            var changed = await storage.ReindexBucketAsync(name, force: false);
+            if (changed > 0) logger.LogInformation("Reindexed {Count} object(s) in bucket '{Bucket}'", changed, name);
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Background object reindex failed");
+    }
+});
 
 // Eagerly resolve so a missing/invalid S3BENDER_MASTER_KEY fails startup immediately, rather than
 // on the first bucket-scoped request - fail closed, matching the Java engine's @PostConstruct check.

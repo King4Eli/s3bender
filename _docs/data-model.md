@@ -28,29 +28,55 @@ See how-to-use.md. Back up `S3BENDER_MASTER_KEY` regardless - see deployment.md.
 
 ## 2. Object bytes (large, unstructured → filesystem)
 
-Objects are not in the database at all. They live directly on disk at
-`{storage root}/{bucket}/{key}`, and their metadata (size, last-modified, ETag) is derived on
-read from the filesystem, not stored redundantly. ETag = hex MD5 of the object's bytes (matches S3
-convention for non-multipart uploads, used here purely as an integrity fingerprint, not a security
-control).
+Object *bytes* are never in the database. They live directly on disk at
+`{storage root}/{bucket}/{key}`. ETag = hex MD5 of the object's bytes (matches S3 convention for
+non-multipart uploads, used here purely as an integrity fingerprint, not a security control),
+computed once as the bytes stream past on `PUT`.
 
-Two pieces of upload-supplied metadata *are* stored, since neither can be derived from the bytes:
-the `Content-Type` given on `PUT`, and the object's public/private visibility (see
-public-and-private-objects.md). Both live together as a small JSON sidecar file at
-`{storage root}/.meta/{bucket}/{key}` - `{"contentType": "image/png", "public": false}` -
-deliberately outside `{bucket}/`, so it never appears in a bucket listing or counts toward "is this
-bucket empty". `contentType` is replayed verbatim as the `Content-Type` response header on every
-future GET/HEAD of that key (falling back to `application/octet-stream` if no sidecar exists, e.g.
-for objects uploaded before this existed). This is what lets a presigned URL - or a public object's
-plain URL - be dropped straight into an `<img>`/`<video>`/`<audio>` tag and render instead of
-download - see presigned-urls.md. `public` is what `BucketAuthMiddleware` checks to decide whether
-a GET/HEAD needs a valid signature at all.
+Two pieces of upload-supplied metadata plus that hash are stored in a small JSON sidecar file at
+`{storage root}/.meta/{bucket}/{key}` - `{"contentType": "image/png", "public": false, "eTag":
+"..."}` - deliberately outside `{bucket}/`, so it never appears in a directory walk or counts
+toward "is this bucket empty". `contentType` is replayed verbatim as the `Content-Type` response
+header on every future GET/HEAD of that key (falling back to `application/octet-stream` if absent).
+This is what lets a presigned URL - or a public object's plain URL - be dropped straight into an
+`<img>`/`<video>`/`<audio>` tag and render instead of download - see presigned-urls.md. `public` is
+what `BucketAuthMiddleware` checks to decide whether a GET/HEAD needs a valid signature at all.
 
 A sidecar written before the `public` field existed is a bare Content-Type string, not JSON; it's
 read back as `{contentType: <that string>, public: false}` rather than failing to parse, so
-pre-existing objects stay private by default instead of erroring or silently becoming public.
+pre-existing objects stay private by default. A sidecar written before `eTag` was added simply has
+no such field, and the hash is recomputed once on next access and written back.
+
+## 3. Object index (queryable → embedded database)
+
+One row per object, in the same embedded database as the bucket table:
+
+| field          | type              | notes                                                        |
+|----------------|-------------------|--------------------------------------------------------------|
+| `bucket`, `key`| string, composite PK | ordered by `key` within a `bucket` - this PK *is* the listing index |
+| `size`         | integer           |                                                              |
+| `lastModified` | timestamp         | file mtime as of indexing                                    |
+| `eTag`         | string, nullable  | null only transiently (a row a reindex has discovered but not yet hashed) |
+| `contentType`  | string, nullable  |                                                              |
+| `public`       | boolean           |                                                              |
+
+This table is a **cache, not a source of truth** - the bytes and the sidecar are. It exists so a
+listing is `WHERE bucket = ? AND key > ? ORDER BY key LIMIT ?` over the PK instead of walking and
+`stat`-ing (and, before the ETag was cached, MD5-hashing) the entire bucket directory on every
+call. Whole-bucket totals (`GET /buckets/{bucket}/stats`) are `COUNT`/`SUM` over it.
+
+Kept in sync three ways: written inline on every `PUT`/`DELETE`/ACL change; rebuilt for one bucket
+on demand by `POST /admin/buckets/{name}/reindex` (and by a non-destructive background pass at
+startup); and self-healed on the first listing of a bucket that has files on disk but no rows
+(e.g. the database file was restored without them). Because it's derived, deleting every object row
+and reindexing loses nothing.
+
+## Reimplementation notes
 
 A reimplementation is free to swap the embedded database for anything else (SQLite, Postgres, a
-JSON file, etcd) as long as it preserves: bucket name uniqueness, access key uniqueness, and the
-ability to decrypt a bucket's secret key given its row. It is free to swap local disk for S3/GCS/
-etc. as the object backend as long as key → bytes lookup stays scoped per-bucket and traversal-safe.
+JSON file, etcd) as long as it preserves: bucket name uniqueness, access key uniqueness, the
+ability to decrypt a bucket's secret key given its row, and a per-`(bucket, key)` object lookup
+that can be scanned in key order. It may drop the object index entirely and walk the filesystem
+per listing instead - correct, just O(bucket size) per call. It is free to swap local disk for
+S3/GCS/etc. as the object backend as long as key → bytes lookup stays scoped per-bucket and
+traversal-safe.

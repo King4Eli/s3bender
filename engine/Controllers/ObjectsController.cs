@@ -61,11 +61,27 @@ public class ObjectsController(ObjectStorageService storageService) : Controller
         return NoContent();
     }
 
+    /// <summary>
+    /// One page of the bucket's keys, ordered, served from the object index. <paramref name="limit"/>
+    /// defaults to and is capped at <see cref="ObjectStorageService.MaxListLimit"/> (S3's max-keys).
+    /// When the response's <c>isTruncated</c> is true, pass its <c>nextCursor</c> back as
+    /// <paramref name="cursor"/> to fetch the following page.
+    /// </summary>
     [HttpGet("objects")]
-    public ActionResult<List<ObjectSummary>> ListObjects(string bucket, [FromQuery] string? prefix)
+    public async Task<ActionResult<ListObjectsResponse>> ListObjects(
+        string bucket, [FromQuery] string? prefix, [FromQuery] int limit = ObjectStorageService.MaxListLimit,
+        [FromQuery] string? cursor = null)
     {
         RequireAuthenticated(bucket);
-        return storageService.ListObjects(bucket, prefix);
+        return await storageService.ListObjectsAsync(bucket, prefix, limit, cursor);
+    }
+
+    /// <summary>Whole-bucket (or whole-prefix) totals for the console's summary bar.</summary>
+    [HttpGet("stats")]
+    public async Task<ActionResult<BucketStats>> Stats(string bucket, [FromQuery] string? prefix)
+    {
+        RequireAuthenticated(bucket);
+        return await storageService.GetStatsAsync(bucket, prefix);
     }
 
     /// <summary>

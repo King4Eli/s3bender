@@ -12,9 +12,10 @@ const store = {
   },
 };
 
-// Client-side view state for the objects list. The list API returns every key in one flat,
-// unpaginated array, so folder counts and paging are both computed here in the browser.
-const objectsView = { all: [], page: 1, pageSize: 25 };
+// View state for the objects list. The server paginates: each fetch returns one ordered page plus
+// a cursor for the next. pageCursors[i] is the `cursor` query param that fetches page i (page 0 is
+// null); pageIndex is the page on screen. Whole-bucket totals come from a separate /stats call.
+const objectsView = { pageSize: 25, pageCursors: [null], pageIndex: 0, totalObjects: 0 };
 
 function toast(message, isError = false) {
   const el = $("toast");
@@ -210,79 +211,84 @@ function selectBucket(name) {
   }
   updateActiveBucketBadge();
   document.querySelector('#objects-table tbody').innerHTML = "";
-  objectsView.all = [];
-  objectsView.page = 1;
+  objectsView.pageCursors = [null];
+  objectsView.pageIndex = 0;
+  objectsView.totalObjects = 0;
   $("objects-summary").hidden = true;
   $("objects-pager").hidden = true;
 }
 
 // ---- Bucket: objects ----
 
+/** Reset to the first page and refresh both the page and the whole-bucket summary. */
 async function listObjects() {
   const { bucket } = currentBucketCreds();
   if (!bucket) return toast("Enter a bucket name first", true);
+  objectsView.pageCursors = [null];
+  objectsView.pageIndex = 0;
+  await Promise.all([fetchObjectPage(), refreshStats()]);
+}
+
+/** Fetch and render the page at objectsView.pageIndex, using the cursor recorded for it. */
+async function fetchObjectPage() {
+  const { bucket } = currentBucketCreds();
+  if (!bucket) return;
   const prefix = $("prefix-filter").value.trim();
-  const query = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
+  const cursor = objectsView.pageCursors[objectsView.pageIndex] || null;
+  const params = new URLSearchParams({ limit: String(objectsView.pageSize) });
+  if (prefix) params.set("prefix", prefix);
+  if (cursor) params.set("cursor", cursor);
   const rawPath = `/buckets/${bucket}/objects`;
   try {
-    const objects = await api(`${rawPath}${query}`, {
-      headers: await bucketAuthHeaders("GET", rawPath),
-    });
-    objectsView.all = objects;
-    objectsView.page = 1;
-    renderObjects();
+    const resp = await api(`${rawPath}?${params}`, { headers: await bucketAuthHeaders("GET", rawPath) });
+    if (resp.isTruncated && objectsView.pageCursors[objectsView.pageIndex + 1] === undefined) {
+      objectsView.pageCursors[objectsView.pageIndex + 1] = resp.nextCursor;
+    }
+    renderObjectsPage(resp);
   } catch (err) {
     toast(`Failed to list objects: ${err.message}`, true);
   }
 }
 
 /**
- * Counts the top level of the bucket the way S3 would with delimiter="/": a key with no slash
- * is a top-level file, and everything before the first slash is a top-level "folder" (counted
- * once, however many keys live under it). Also totals object count and bytes.
+ * Whole-bucket (or whole-prefix) totals for the summary bar. Computed server-side from the object
+ * index - the folder/file split is S3-style with delimiter="/": a key with no slash is a
+ * top-level file, everything before the first slash is a top-level folder counted once.
  */
-function topLevelCounts(objects) {
-  const folders = new Set();
-  let files = 0;
-  let bytes = 0;
-  for (const o of objects) {
-    bytes += o.size;
-    const slash = o.key.indexOf("/");
-    if (slash === -1) files += 1;
-    else folders.add(o.key.slice(0, slash));
+async function refreshStats() {
+  const { bucket } = currentBucketCreds();
+  if (!bucket) return;
+  const prefix = $("prefix-filter").value.trim();
+  const rawPath = `/buckets/${bucket}/stats`;
+  const query = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
+  try {
+    const s = await api(`${rawPath}${query}`, { headers: await bucketAuthHeaders("GET", rawPath) });
+    objectsView.totalObjects = s.objects;
+    $("stat-folders").textContent = s.topLevelFolders;
+    $("stat-files").textContent = s.topLevelFiles;
+    $("stat-objects").textContent = s.objects;
+    $("stat-size").textContent = formatBytes(s.totalBytes);
+    $("objects-summary").hidden = false;
+  } catch (err) {
+    toast(`Failed to load bucket stats: ${err.message}`, true);
   }
-  return { folders: folders.size, files, objects: objects.length, bytes };
 }
 
-function renderObjects() {
-  const { all, pageSize } = objectsView;
+function renderObjectsPage(resp) {
   const { bucket } = currentBucketCreds();
   const prefix = $("prefix-filter").value.trim();
   const tbody = document.querySelector("#objects-table tbody");
-  const summary = $("objects-summary");
   const pager = $("objects-pager");
-
-  const counts = topLevelCounts(all);
-  $("stat-folders").textContent = counts.folders;
-  $("stat-files").textContent = counts.files;
-  $("stat-objects").textContent = counts.objects;
-  $("stat-size").textContent = formatBytes(counts.bytes);
-  summary.hidden = false;
+  const objects = resp.objects;
 
   tbody.innerHTML = "";
-  if (all.length === 0) {
+  if (objects.length === 0 && objectsView.pageIndex === 0) {
     tbody.innerHTML = `<tr><td class="empty-state" colspan="6">No objects${prefix ? ` under "${escapeHtml(prefix)}"` : ""}.</td></tr>`;
     pager.hidden = true;
     return;
   }
 
-  const pageCount = Math.max(1, Math.ceil(all.length / pageSize));
-  if (objectsView.page > pageCount) objectsView.page = pageCount;
-  const page = objectsView.page;
-  const start = (page - 1) * pageSize;
-  const slice = all.slice(start, start + pageSize);
-
-  for (const o of slice) {
+  for (const o of objects) {
     const tr = document.createElement("tr");
     const publicUrl = `${location.origin}/buckets/${encodeURIComponent(bucket)}/objects/${encodeKeyPath(o.key)}`;
     const etag = o.eTag || "";
@@ -318,10 +324,14 @@ function renderObjects() {
     tbody.appendChild(tr);
   }
 
-  $("pager-info").textContent = `${start + 1}–${start + slice.length} of ${all.length}`;
-  $("pager-pos").textContent = `Page ${page} / ${pageCount}`;
-  $("page-prev").disabled = page <= 1;
-  $("page-next").disabled = page >= pageCount;
+  const start = objectsView.pageIndex * objectsView.pageSize;
+  const shownEnd = start + objects.length;
+  $("pager-info").textContent = objectsView.totalObjects
+    ? `${start + 1}–${shownEnd} of ${objectsView.totalObjects}`
+    : `${start + 1}–${shownEnd}`;
+  $("pager-pos").textContent = `Page ${objectsView.pageIndex + 1}`;
+  $("page-prev").disabled = objectsView.pageIndex <= 0;
+  $("page-next").disabled = !resp.isTruncated;
   pager.hidden = false;
 }
 
@@ -520,19 +530,18 @@ $("refresh-buckets").addEventListener("click", refreshBuckets);
 $("list-objects").addEventListener("click", listObjects);
 
 $("page-prev").addEventListener("click", () => {
-  if (objectsView.page > 1) {
-    objectsView.page -= 1;
-    renderObjects();
+  if (objectsView.pageIndex > 0) {
+    objectsView.pageIndex -= 1;
+    fetchObjectPage();
   }
 });
 $("page-next").addEventListener("click", () => {
-  objectsView.page += 1;
-  renderObjects();
+  objectsView.pageIndex += 1;
+  fetchObjectPage();
 });
 $("page-size").addEventListener("change", (e) => {
   objectsView.pageSize = parseInt(e.target.value, 10) || 25;
-  objectsView.page = 1;
-  renderObjects();
+  listObjects();
 });
 $("dialog-close").addEventListener("click", () => $("secret-dialog").close());
 $("preview-close").addEventListener("click", () => {

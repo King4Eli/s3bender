@@ -34,4 +34,13 @@ public class AdminController(BucketService bucketService) : ControllerBase
     [HttpPost("{name}/rotate")]
     public async Task<ActionResult<CreateBucketResponse>> RotateKey(string name) =>
         await bucketService.RotateBucketKeyAsync(name);
+
+    /// <summary>
+    /// Rebuilds the bucket's object index from what's on disk - re-stats and re-hashes every file.
+    /// Run this once for a bucket that predates the index, or after adding/removing object files out
+    /// of band. Cost scales with the bucket's total size (every byte is hashed); safe to re-run.
+    /// </summary>
+    [HttpPost("{name}/reindex")]
+    public async Task<ActionResult<ReindexResponse>> Reindex(string name) =>
+        await bucketService.ReindexBucketAsync(name);
 }

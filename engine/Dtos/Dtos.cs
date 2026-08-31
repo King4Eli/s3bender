@@ -15,6 +15,18 @@ public record BucketSummary(string Name, DateTimeOffset CreatedAt, string? Descr
 
 public record ObjectSummary(string Key, long Size, DateTimeOffset LastModified, string ETag, string ContentType, bool Public);
 
+/// <summary>
+/// One page of a bucket listing. <see cref="NextCursor"/> is the last key on this page - pass it
+/// back as `?cursor=` to fetch the next page; it is null exactly when <see cref="IsTruncated"/> is
+/// false. <see cref="KeyCount"/> is the number of objects on this page, not in the whole bucket.
+/// </summary>
+public record ListObjectsResponse(IReadOnlyList<ObjectSummary> Objects, bool IsTruncated, string? NextCursor, int KeyCount);
+
+/// <summary>Whole-bucket (or whole-prefix) totals, served from the object index in one query.</summary>
+public record BucketStats(long Objects, long TotalBytes, int TopLevelFolders, int TopLevelFiles);
+
+public record ReindexResponse(string Bucket, int Indexed);
+
 public record SetAclRequest(bool Public);
 
 public record PresignRequest(

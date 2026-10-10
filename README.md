@@ -63,14 +63,17 @@ generating a URL that needs no signing at the point of use.
 It's the same app answering both ports, so the page and the API it calls are always same-origin -
 no CORS, no separate backend. The one thing that can't be avoided: since there's no server-side
 proxy to do the HMAC signing, **the browser signs its own requests** using the Web Crypto API
-(`crypto.subtle`, see `engine/wwwroot/app.js`) - byte-for-byte the same
+(`crypto.subtle`), or a built-in pure-JS HMAC-SHA256 where that's unavailable (see
+`engine/wwwroot/app.js`) - byte-for-byte the same
 `S3BENDER-HMAC-SHA256` algorithm documented in `_docs/auth-and-signing.md`. The admin key and any
 bucket's access/secret key you type in stay in that tab's `localStorage` and are only ever sent to
 this app.
 
-`crypto.subtle` requires a secure context (HTTPS, or `localhost`) - the console works out of the
-box in local dev but needs TLS in front of it for any non-localhost deployment (see
-`_docs/deployment.md`).
+Browsers only expose `crypto.subtle` in a secure context (HTTPS, `localhost`, `127.0.0.1`), so on a
+plain-HTTP LAN address like `http://192.168.1.20:9067` the console falls back to its pure-JS
+signer - it works from any address. Bucket secret keys never leave the browser either way (only
+signatures are sent), but over plain HTTP the **admin key** travels in cleartext in every admin
+request, so use TLS for anything beyond a trusted LAN (see `_docs/deployment.md`).
 
 Presigned URLs bypass all of this by design: the API returns them with its own public address
 (`S3BENDER_PUBLIC_BASE_URL`), and the browser fetches those **directly**, unsigned, until they

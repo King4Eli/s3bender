@@ -62,8 +62,9 @@ See [auth-and-signing.md](auth-and-signing.md) for the exact byte-for-byte signi
 `engine/wwwroot/` is a small static single-page app served by the same process as the API,
 on a second HTTP listener (`S3BENDER_FRONTEND_PORT`, default 8081) - both ports answer the
 exact same pipeline, so the console and the raw API are always same-origin. It has no privileged
-access: it signs its own `/buckets/**` requests client-side with the Web Crypto API using whatever
-access/secret key the person using it types in, exactly like any other client would have to. There
+access: it signs its own `/buckets/**` requests client-side (Web Crypto, or a pure-JS HMAC
+fallback on plain-HTTP non-localhost addresses) using whatever access/secret key the person using
+it types in, exactly like any other client would have to. There
 is no server-side proxy or credential store sitting between the browser and the API - see the root
 README's "How the console UI talks to the Api".
 

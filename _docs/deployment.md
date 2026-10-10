@@ -75,9 +75,12 @@ The container serves plain HTTP on both ports. Two separate reasons this matters
 - Because request bodies are excluded from the signature (see auth-and-signing.md), an
   unencrypted transport lets an on-path attacker read/replay traffic within a signature's
   validity window.
-- The console UI's client-side request signing depends on `crypto.subtle` (Web Crypto), which
-  browsers only expose in a *secure context* - HTTPS, or `localhost`. The UI will silently fail
-  to sign anything if served over plain HTTP on a non-localhost host.
+- The admin key is sent as a plain header on every `/admin/*` request (the console included), so
+  over HTTP anyone on the network path can read it. Bucket secret keys are never sent - only
+  signatures - but captured signed requests can be replayed within the clock-skew window.
+
+(The console itself works over plain HTTP from any address: where the browser withholds
+`crypto.subtle` outside a secure context, it signs with a built-in pure-JS HMAC-SHA256.)
 
 **Always terminate TLS in front of this** - a reverse proxy (nginx, Caddy, Traefik) or your cloud
 load balancer - before exposing either port outside a trusted network. Set

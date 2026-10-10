@@ -84,6 +84,13 @@ set on upload, or `application/octet-stream` if none was), `X-S3Bender-Public` (
 Accepts header auth or presigned query auth - or, if the object is public, **no auth at all**. See
 public-and-private-objects.md. `404 NoSuchKey` if missing.
 
+Standard HTTP read semantics apply (after auth): `Range: bytes=...` returns `206 Partial Content`
+with `Content-Range` (`Accept-Ranges: bytes` is always sent), `If-None-Match` with the current ETag
+or `If-Modified-Since` returns `304` with no body, and `Last-Modified` is sent. `Cache-Control` is
+`private, max-age=N` for a presigned request (N = the URL's remaining lifetime, at most 300s),
+`public, no-cache` for an anonymous read of a public object (cacheable, but revalidated every time
+so making it private takes effect immediately), and `private, no-cache` for header auth.
+
 ### `HEAD /buckets/{bucket}/objects/{key}`
 Metadata only, no body. Same headers as GET, same auth rules (including the public-object bypass).
 

@@ -1,0 +1,40 @@
+{
+  "name": "s3bender (Go)",
+  "image": "mcr.microsoft.com/devcontainers/go:1.26",
+  "features": {
+    // Lets `docker compose up --build` inside the container drive the host's Docker daemon.
+    // moby=false: the Go image is Debian trixie, which has no moby-* packages; this installs
+    // Docker's official CLI + compose plugin instead.
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false }
+  },
+  "forwardPorts": [8080, 8081],
+  "portsAttributes": {
+    "8080": { "label": "API" },
+    "8081": { "label": "Console", "onAutoForward": "openBrowser" }
+  },
+  // Cap parallel package builds. Compiling the pure-Go SQLite driver (huge generated files) 8-wide,
+  // especially with -race, exceeds a typical Docker Desktop VM's memory and the OOM killer takes
+  // the whole container down. -p=2 peaks around 2 GB.
+  "containerEnv": {
+    "GOFLAGS": "-p=2"
+  },
+  // Dev-only values so `go run .` works out of the box. Never reuse this master key anywhere real -
+  // production config comes from .env/engine.env (see .env/engine.env.example).
+  // remoteEnv (not containerEnv) so these are set for VS Code terminals/debug sessions without
+  // being baked into the image.
+  "remoteEnv": {
+    "S3BENDER_ADMIN_API_KEY": "dev-admin-key",
+    "S3BENDER_MASTER_KEY": "ZGV2LW9ubHktbWFzdGVyLWtleS0wMTIzNDU2Nzg5YWI=",
+    "S3BENDER_PUBLIC_BASE_URL": "http://localhost:8080"
+  },
+  "postCreateCommand": "cd engine && go mod download",
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go"],
+      "settings": {
+        "go.toolsManagement.autoUpdate": true,
+        "go.testFlags": ["-race"]
+      }
+    }
+  }
+}

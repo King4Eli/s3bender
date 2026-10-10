@@ -22,7 +22,7 @@ another language - it already has once (see porting-guide.md). Read them in this
 9. [porting-guide.md](porting-guide.md) - what to preserve if you reimplement this in another
    language/stack, and what's safe to change.
 
-The implementation is `engine/` (C# / ASP.NET Core 8) - see the root README for the exact
-project layout. This spec has already survived one full rewrite (an earlier Java/Spring Boot
-implementation) without changing - nothing in the wire protocol or data model is tied to any one
+The implementation is `engine/` (Go) - see the root README for the exact project layout. This
+spec has already survived two full rewrites (Java/Spring Boot → C#/ASP.NET Core → Go) without
+changing - nothing in the wire protocol or data model is tied to any one
 codebase. See porting-guide.md.

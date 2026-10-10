@@ -1,7 +1,7 @@
 # s3bender
 
-A self-hosted, MinIO-like object storage server: buckets, objects, presigned URLs. One C# /
-ASP.NET Core 8 app, Docker-first. The one deliberate difference from MinIO/S3: **every bucket
+A self-hosted, MinIO-like object storage server: buckets, objects, presigned URLs. One Go
+binary (standard library HTTP + embedded SQLite, no CGO), Docker-first. The one deliberate difference from MinIO/S3: **every bucket
 gets its own access key / secret key pair at creation time**, instead of one shared IAM identity
 across all buckets - and unlike S3, that pair can be rotated on demand without touching the
 bucket's objects.
@@ -13,19 +13,19 @@ written to be language-agnostic - nothing in them is specific to this implementa
 ## Quick start
 
 ```bash
-docker compose up -d --build
-curl http://localhost:8080/healthz   # API
-curl http://localhost:8081/healthz   # same app, second port - this is what the console UI uses
+docker compose up -d --build         # builds locally; servers pull ghcr.io/king4eli/s3bender instead
+curl http://localhost:9066/healthz   # API
+curl http://localhost:9067/healthz   # same app, second port - this is what the console UI uses
 ```
 
-Open http://localhost:8081, paste the admin key from `.env/engine.env`
+Open http://localhost:9067, paste the admin key from `.env/engine.env`
 (`S3BENDER_ADMIN_API_KEY`), create a bucket, and use the returned access/secret key to browse,
 upload, download, presign, and rotate objects/credentials - all from the browser. Or drive the API
 directly:
 
 ```bash
 # create a bucket - get back a one-time secret key
-curl -X POST http://localhost:8080/admin/buckets \
+curl -X POST http://localhost:9066/admin/buckets \
   -H "X-Admin-Api-Key: $S3BENDER_ADMIN_API_KEY" -H "Content-Type: application/json" \
   -d '{"name":"demo"}'
 ```
@@ -38,20 +38,25 @@ generating a URL that needs no signing at the point of use.
 
 ## Repo layout
 
-- `engine/` - the C#/.NET 8 implementation: the whole app - bucket CRUD
+- `engine/` - the Go implementation: the whole app - bucket CRUD
   (create/list/delete/**rotate**), object PUT/GET/HEAD/DELETE/LIST, presign, HMAC auth, AES-256-GCM
-  secret encryption, SQLite metadata + local-disk object storage. `Controllers/`, `Services/`,
-  `Middleware/`, `Models/`, `Data/`, `Dtos/`, `Options/`. `wwwroot/` is the static console UI,
-  served by this same process on a second port - see "How the console UI talks to the API" below.
-  - `Api.Tests/` - xUnit: `SignatureServiceTests` + `WebApplicationFactory` integration tests
-    (create→upload→download→presign, and key rotation invalidating the old credential while
-    keeping objects intact).
+  secret encryption, SQLite metadata + local-disk object storage.
+  - `main.go` - reads config, starts both ports, background reindex, graceful shutdown.
+  - `internal/server/` - `crypto.go` (AES-GCM + HMAC signing), `store.go` (SQLite),
+    `storage.go` (bytes, sidecars, object index), `auth.go` (admin + bucket auth),
+    `handlers.go`, `server.go` (routing). Tests sit beside them (`*_test.go`): signing vectors
+    plus end-to-end flows against a real server (create→upload→download→presign, key rotation,
+    public objects, pagination, reindex, Range/304 caching).
+  - `wwwroot/` - the static console UI, embedded into the binary and served by this same process
+    on a second port - see "How the console UI talks to the API" below.
 - `_docs/` - the real documentation (architecture, data model, auth spec, API reference,
   how-to-use, deployment, porting guide) - protocol-level, not tied to this implementation.
-- `docker-compose.yml` / `docker-compose.override.yml` - base (prod-shaped, pulls a prebuilt
-  image) + local dev override (adds `build:`). Runs on `network_mode: host` (Linux) so the
-  container's `8080`/`8081` are directly the host's - no explicit port mapping needed.
+- `docker-compose.yml` / `docker-compose.override.yml` - base (prod-shaped, pulls
+  `ghcr.io/king4eli/s3bender`, host ports 9066/9067) + local dev override (adds `build:`).
+- `.github/workflows/image.yml` - CI: Go tests, then a multi-arch image pushed to GHCR on every
+  push to `main` and every `v*` tag. See `_docs/deployment.md` "Published image".
 - `.env/engine.env` - config (gitignored - `.env/engine.env.example` is the tracked template).
+- `.devcontainer/` - Go 1.26 dev container with Docker access; see "Development" below.
 
 ## How the console UI talks to the API
 
@@ -73,8 +78,25 @@ expire - that's the point of a presigned URL.
 
 ## Development
 
+Open the repo in the dev container (VS Code: "Dev Containers: Reopen in Container") - it has
+Go 1.26, the Go extension, and access to the host's Docker. It also sets dev-only
+`S3BENDER_ADMIN_API_KEY=dev-admin-key` and a throwaway master key, so this works immediately:
+
 ```bash
 cd engine
-dotnet test Api.Tests/Api.Tests.csproj     # needs .NET 8 SDK, or run inside mcr.microsoft.com/dotnet/sdk:8.0
-docker build -t s3bender-engine:latest .
+go run .                 # API on :8080, console on :8081 (forwarded), data in engine/data/
+go test -race ./...      # unit + end-to-end tests, no external services needed
+docker compose up -d --build   # (from the repo root) the production image
 ```
+
+Without the dev container you only need Go 1.26+; there is no CGO, so no C toolchain either.
+F5 in VS Code runs the engine under the debugger (`.vscode/launch.json`).
+
+### Downloads are fast by design
+
+Object GET/HEAD go through `http.ServeContent` on the open file: the body is sent with
+`sendfile(2)` (zero-copy), `Range` requests return `206` (videos seek and large images start
+rendering immediately), and `If-None-Match`/`If-Modified-Since` return a body-less `304`.
+Presigned responses carry `Cache-Control: private, max-age=<remaining lifetime, max 5 min>`, and the
+console reuses one presigned URL per object version, so reopening a preview comes straight from the
+browser cache.

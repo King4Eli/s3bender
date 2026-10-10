@@ -30,7 +30,7 @@ console.log(bucket); // { name: "demo", accessKey: "AK...", secretKey: "...", cr
 Save `accessKey` and `secretKey` from the response - `secretKey` is never shown again.
 
 **2. Sign a request.** Every `/buckets/{bucket}/**` call needs an `Authorization` header built
-from those two values. This is the same computation `engine/Services/SignatureService.cs`
+from those two values. This is the same computation `engine/internal/server/crypto.go`
 does server-side and the console's own `app.js` does client-side via Web Crypto - see
 auth-and-signing.md for the exact string-to-sign layout this reproduces. Every other example on
 this page and in public-and-private-objects.md reuses this `authHeader` helper:

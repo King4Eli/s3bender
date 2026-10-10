@@ -4,156 +4,194 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>s3bender console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%234f8cff'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <h1>s3bender</h1>
-    <p class="tagline">object storage console</p>
+  <header class="topbar">
+    <a class="brand" href="#/"><span class="brand-mark"></span>s3bender</a>
+    <nav class="crumbs" id="crumbs" aria-label="Location"></nav>
+    <button id="admin-chip" class="chip" type="button" title="Admin API key">
+      <span class="dot" id="admin-dot"></span><span id="admin-status">Admin key not set</span>
+    </button>
   </header>
 
   <main>
-    <section class="panel" id="admin-panel">
-      <h2>Admin</h2>
-      <label>
-        Admin API key
-        <input id="admin-key" type="password" placeholder="X-Admin-Api-Key" autocomplete="off" />
-      </label>
-
-      <form id="create-bucket-form">
-        <label>
-          New bucket name
-          <input id="new-bucket-name" type="text" placeholder="my-bucket" pattern="[a-z0-9-]{3,63}" required />
-        </label>
-        <label>
-          <span>Short description <span class="optional">optional</span></span>
-          <input id="new-bucket-description" type="text" placeholder="what this bucket is for" maxlength="200" />
-        </label>
-        <button type="submit">Create bucket</button>
-      </form>
-
-      <div class="row-between section-heading">
-        <h3>Buckets</h3>
-        <button id="refresh-buckets" class="secondary sm" type="button">Refresh</button>
-      </div>
-      <div class="table-wrap">
-        <table id="buckets-table">
-          <thead><tr><th>Name</th><th>Description</th><th>Created</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel" id="bucket-panel">
-      <h2>
-        <span class="bucket-title">Bucket</span>
-        <span id="active-bucket-badge" class="badge empty">none selected</span>
-      </h2>
-      <label>
-        Bucket name
-        <input id="bucket-name" type="text" placeholder="my-bucket" />
-      </label>
-      <label>
-        Access key
-        <input id="access-key" type="text" autocomplete="off" />
-      </label>
-      <label>
-        Secret key
-        <input id="secret-key" type="password" autocomplete="off" />
-      </label>
-      <label class="checkbox">
-        <input id="remember-creds" type="checkbox" checked />
-        Remember these keys in this browser (localStorage - dev convenience only)
-      </label>
-
-      <div class="row-between section-heading">
-        <h3>Objects</h3>
+    <!-- ===== Buckets (home) ===== -->
+    <section id="view-buckets" class="view" hidden>
+      <div class="view-head">
+        <div>
+          <h1>Buckets</h1>
+          <p class="sub">Every bucket has its own access key / secret key pair.</p>
+        </div>
         <div class="btn-row">
-          <input id="prefix-filter" type="text" placeholder="prefix (optional)" />
-          <button id="list-objects" class="secondary sm" type="button">List</button>
+          <button id="open-with-keys" class="secondary" type="button">Open with keys</button>
+          <button id="new-bucket" type="button">New bucket</button>
         </div>
       </div>
 
-      <div class="upload">
-        <label>
-          Upload file
-          <input id="file-input" type="file" />
-        </label>
-        <label class="checkbox">
-          <input id="upload-public" type="checkbox" />
-          Make it public - readable at a stable URL with no credentials (default: private)
-        </label>
+      <form id="admin-gate" class="callout" hidden>
+        <div>
+          <strong>Connect as admin</strong>
+          <p>Paste the server's admin API key to list, create, rotate and delete buckets. Without it
+            you can still open a bucket you have keys for.</p>
+        </div>
+        <div class="gate-row">
+          <input id="gate-admin-key" type="password" placeholder="X-Admin-Api-Key" autocomplete="off" required />
+          <button type="submit">Connect</button>
+        </div>
+      </form>
+
+      <div id="bucket-grid" class="bucket-grid"></div>
+    </section>
+
+    <!-- ===== One bucket ===== -->
+    <section id="view-bucket" class="view" hidden>
+      <div class="view-head">
+        <div class="min0">
+          <h1 id="bucket-title" class="mono"></h1>
+          <p class="sub" id="bucket-desc"></p>
+        </div>
+        <div class="btn-row">
+          <button id="bucket-keys" class="secondary" type="button">Keys</button>
+          <button id="refresh-objects" class="secondary" type="button">Refresh</button>
+          <button id="upload-btn" type="button">Upload</button>
+          <input id="file-input" type="file" multiple hidden />
+        </div>
       </div>
 
       <div id="objects-summary" class="stats" hidden>
-        <div class="stat">
-          <span class="stat-label">Top-level folders</span>
-          <span class="stat-value" id="stat-folders">0</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Top-level files</span>
-          <span class="stat-value" id="stat-files">0</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Objects (total)</span>
-          <span class="stat-value" id="stat-objects">0</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Total size</span>
-          <span class="stat-value" id="stat-size">0 B</span>
-        </div>
+        <div class="stat"><span class="stat-label">Objects</span><span class="stat-value" id="stat-objects">0</span></div>
+        <div class="stat"><span class="stat-label">Total size</span><span class="stat-value" id="stat-size">0 B</span></div>
+        <div class="stat root-only"><span class="stat-label">Top-level folders</span><span class="stat-value" id="stat-folders">0</span></div>
+        <div class="stat root-only"><span class="stat-label">Top-level files</span><span class="stat-value" id="stat-files">0</span></div>
       </div>
 
-      <div class="table-wrap">
-        <table id="objects-table">
-          <colgroup>
-            <col class="col-key" />
-            <col class="col-size" />
-            <col class="col-modified" />
-            <col class="col-access" />
-            <col class="col-etag" />
-            <col class="col-actions" />
-          </colgroup>
-          <thead><tr><th>Key</th><th>Size</th><th>Modified</th><th>Access</th><th>ETag</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
+      <div class="browser" id="browser">
+        <div class="toolbar">
+          <nav class="path" id="path-crumbs" aria-label="Folder"></nav>
+          <div class="toolbar-right">
+            <input id="prefix-filter" type="search" placeholder="Filter by name prefix…" autocomplete="off" />
+            <label class="switch" title="Uploads are private unless this is on">
+              <input id="upload-public" type="checkbox" />
+              <span class="track"></span>
+              Upload as public
+            </label>
+          </div>
+        </div>
 
-      <div id="objects-pager" class="pager" hidden>
-        <span class="pager-info" id="pager-info"></span>
-        <div class="pager-controls">
-          <span class="pager-size">
-            Rows
-            <select id="page-size">
-              <option>10</option>
-              <option selected>25</option>
-              <option>50</option>
-              <option>100</option>
-            </select>
-          </span>
-          <button id="page-prev" class="secondary sm" type="button">&lsaquo; Prev</button>
-          <span class="pager-pos" id="pager-pos"></span>
-          <button id="page-next" class="secondary sm" type="button">Next &rsaquo;</button>
+        <div class="table-wrap">
+          <table id="objects-table">
+            <thead><tr>
+              <th>Name</th><th class="r w-size hide-xs">Size</th><th class="hide-sm w-modified">Modified</th>
+              <th class="hide-sm w-access">Access</th><th class="w-actions"><span class="sr-only">Actions</span></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div id="objects-pager" class="pager" hidden>
+          <span id="pager-info"></span>
+          <div class="pager-controls">
+            <label class="pager-size">Rows
+              <select id="page-size">
+                <option>10</option><option selected>25</option><option>50</option><option>100</option>
+              </select>
+            </label>
+            <button id="page-prev" class="secondary sm" type="button">&lsaquo; Prev</button>
+            <span class="pager-pos" id="pager-pos"></span>
+            <button id="page-next" class="secondary sm" type="button">Next &rsaquo;</button>
+          </div>
+        </div>
+
+        <div class="drop-overlay" id="drop-overlay" hidden>
+          <div>Drop files to upload to <strong id="drop-target"></strong></div>
         </div>
       </div>
     </section>
   </main>
 
-  <div id="toast" class="toast hidden"></div>
+  <aside id="upload-tray" class="upload-tray" hidden>
+    <div class="tray-head">
+      <strong id="tray-title">Uploads</strong>
+      <button id="tray-close" class="icon-btn" type="button" aria-label="Dismiss">&times;</button>
+    </div>
+    <ul id="tray-list"></ul>
+  </aside>
+
+  <div id="menu" class="menu" role="menu" hidden></div>
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <!-- ===== Dialogs ===== -->
+  <dialog id="settings-dialog">
+    <form method="dialog" id="settings-form">
+      <h3>Admin API key</h3>
+      <p>Stored in this browser's localStorage and only ever sent to this server.</p>
+      <label>Admin key <input id="admin-key" type="password" placeholder="X-Admin-Api-Key" autocomplete="off" /></label>
+      <div class="dialog-actions">
+        <button id="admin-forget" class="danger" type="button">Forget key</button>
+        <span class="spacer"></span>
+        <button value="cancel" class="secondary" formnovalidate>Cancel</button>
+        <button value="save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="create-dialog">
+    <form method="dialog" id="create-form">
+      <h3>New bucket</h3>
+      <p>The bucket gets its own access/secret key pair, shown once after it's created.</p>
+      <label>Name
+        <input id="new-bucket-name" type="text" placeholder="my-bucket" pattern="[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]"
+          title="3-63 chars: lowercase letters, digits and hyphens, not starting or ending with a hyphen" required />
+      </label>
+      <label><span>Description <span class="optional">optional</span></span>
+        <input id="new-bucket-description" type="text" placeholder="what this bucket is for" maxlength="200" />
+      </label>
+      <label class="checkbox"><input id="create-remember" type="checkbox" checked /> Remember the new keys in this browser</label>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button value="cancel" class="secondary" formnovalidate>Cancel</button>
+        <button value="create">Create bucket</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="keys-dialog">
+    <form method="dialog" id="keys-form">
+      <h3 id="keys-title">Bucket keys</h3>
+      <p>Requests are signed in this browser with these keys - they are never sent to the server.</p>
+      <label>Bucket <input id="keys-bucket" type="text" placeholder="my-bucket" required /></label>
+      <label>Access key <input id="keys-access" type="text" autocomplete="off" required /></label>
+      <label>Secret key <input id="keys-secret" type="password" autocomplete="off" required /></label>
+      <label class="checkbox"><input id="keys-remember" type="checkbox" checked /> Remember in this browser (localStorage)</label>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button value="cancel" class="secondary" formnovalidate>Cancel</button>
+        <button value="ok">Open bucket</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="secret-dialog">
     <h3 id="secret-dialog-title">Bucket created</h3>
     <p>This secret key is shown <strong>once</strong>. Copy it now - the server cannot show it again.</p>
-    <label>Bucket <input id="dialog-bucket-name" type="text" readonly /></label>
-    <label>Access key <input id="dialog-access-key" type="text" readonly /></label>
-    <label>Secret key <input id="dialog-secret-key" type="text" readonly /></label>
-    <button id="dialog-close" type="button">I've saved it</button>
+    <label>Bucket <span class="copy-field"><input id="dialog-bucket-name" type="text" readonly /></span></label>
+    <label>Access key <span class="copy-field"><input id="dialog-access-key" type="text" readonly /><button class="secondary sm" type="button" data-copy="dialog-access-key">Copy</button></span></label>
+    <label>Secret key <span class="copy-field"><input id="dialog-secret-key" type="text" readonly /><button class="secondary sm" type="button" data-copy="dialog-secret-key">Copy</button></span></label>
+    <div class="dialog-actions">
+      <span class="spacer"></span>
+      <button id="dialog-close" type="button">I've saved it</button>
+    </div>
   </dialog>
 
   <dialog id="preview-dialog">
-    <div class="row-between">
-      <h3 id="preview-title"></h3>
-      <button id="preview-close" class="secondary sm" type="button">Close</button>
+    <div class="preview-head">
+      <h3 id="preview-title" class="mono"></h3>
+      <div class="btn-row">
+        <button id="preview-download" class="secondary sm" type="button">Download</button>
+        <button id="preview-close" class="secondary sm" type="button">Close</button>
+      </div>
     </div>
     <div id="preview-body" class="preview-body"></div>
   </dialog>

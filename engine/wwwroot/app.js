@@ -1,21 +1,79 @@
+"use strict";
+
 const $ = (id) => document.getElementById(id);
+
+// ---- persistence (localStorage can throw in private windows - never let that break the page) ----
+
+const BUCKET_PREFIX = "s3bender.bucket.";
+
+function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* ignore */ } }
+function lsDel(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } }
 
 const store = {
   adminKey: {
-    get: () => localStorage.getItem("s3bender.adminKey") || "",
-    set: (v) => localStorage.setItem("s3bender.adminKey", v),
+    get: () => lsGet("s3bender.adminKey") || "",
+    set: (v) => (v ? lsSet("s3bender.adminKey", v) : lsDel("s3bender.adminKey")),
   },
   bucketCreds: {
-    get: (name) => JSON.parse(localStorage.getItem(`s3bender.bucket.${name}`) || "null"),
-    set: (name, creds) => localStorage.setItem(`s3bender.bucket.${name}`, JSON.stringify(creds)),
-    remove: (name) => localStorage.removeItem(`s3bender.bucket.${name}`),
+    get: (name) => { try { return JSON.parse(lsGet(BUCKET_PREFIX + name) || "null"); } catch { return null; } },
+    set: (name, creds) => lsSet(BUCKET_PREFIX + name, JSON.stringify(creds)),
+    remove: (name) => lsDel(BUCKET_PREFIX + name),
+    names: () => {
+      const out = [];
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(BUCKET_PREFIX)) out.push(k.slice(BUCKET_PREFIX.length));
+        }
+      } catch { /* ignore */ }
+      return out.sort();
+    },
   },
 };
 
-// View state for the objects list. The server paginates: each fetch returns one ordered page plus
-// a cursor for the next. pageCursors[i] is the `cursor` query param that fetches page i (page 0 is
-// null); pageIndex is the page on screen. Whole-bucket totals come from a separate /stats call.
-const objectsView = { pageSize: 25, pageCursors: [null], pageIndex: 0, totalObjects: 0 };
+// ---- view state ----
+
+const state = {
+  buckets: [],      // last admin listing: [{ name, description, createdAt }]
+  bucket: null,     // the open bucket's credentials: { name, accessKey, secretKey }
+  folder: "",       // current folder within the bucket: "" or ends with "/"
+  filter: "",       // name-prefix filter within the folder
+  pageSize: 25,
+  pageCursors: [null], // pageCursors[i] is the `cursor` that fetches page i
+  pageIndex: 0,
+  totalObjects: 0,
+  listSeq: 0,       // drops responses that arrive after a newer listing was started
+};
+
+const listPrefix = () => state.folder + state.filter;
+
+// ---- icons ----
+
+const ICONS = {
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  doc: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+  video: '<rect x="2" y="5" width="15" height="14" rx="2"/><path d="m22 8-5 4 5 4z"/>',
+  audio: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  bucket: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+  more: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
+  eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  download: '<path d="M12 4v12m0 0-4-4m4 4 4-4"/><path d="M4 18v1a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1"/>',
+};
+
+const icon = (name) =>
+  `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+
+function fileKind(contentType = "") {
+  if (contentType.startsWith("image/")) return "image";
+  if (contentType.startsWith("video/")) return "video";
+  if (contentType.startsWith("audio/")) return "audio";
+  if (contentType.startsWith("text/") || contentType === "application/pdf" || contentType.includes("json")) return "doc";
+  return "file";
+}
+
+// ---- small helpers ----
 
 function toast(message, isError = false) {
   const el = $("toast");
@@ -26,8 +84,36 @@ function toast(message, isError = false) {
   toast._t = setTimeout(() => el.classList.add("hidden"), 4000);
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
 function encodeKeyPath(key) {
   return key.split("/").map(encodeURIComponent).join("/");
+}
+
+function formatDate(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "-";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+  return `${n.toFixed(1)} ${units[i]}`;
+}
+
+async function copyText(text, successMessage) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(successMessage);
+  } catch {
+    toast(text);
+  }
 }
 
 async function api(pathAndQuery, options = {}) {
@@ -36,10 +122,14 @@ async function api(pathAndQuery, options = {}) {
   const body = contentType.includes("application/json") ? await res.json().catch(() => null) : await res.text();
   if (!res.ok) {
     const message = (body && body.message) || (typeof body === "string" && body) || `HTTP ${res.status}`;
-    throw new Error(message);
+    const err = new Error(message);
+    err.status = res.status;
+    throw err;
   }
   return body;
 }
+
+const adminHeaders = (extra = {}) => ({ "X-Admin-Api-Key": store.adminKey.get(), ...extra });
 
 // ---- Signing (S3BENDER-HMAC-SHA256, see /_docs/auth-and-signing.md) ----
 //
@@ -63,53 +153,165 @@ async function buildAuthHeader(accessKey, secretKey, method, rawPath) {
   return `S3BENDER-HMAC-SHA256 AccessKey=${accessKey},Timestamp=${timestamp},Signature=${signature}`;
 }
 
-function currentBucketCreds() {
-  return {
-    bucket: $("bucket-name").value.trim(),
-    accessKey: $("access-key").value.trim(),
-    secretKey: $("secret-key").value,
-  };
-}
-
 async function bucketAuthHeaders(method, rawPath) {
-  const { accessKey, secretKey } = currentBucketCreds();
+  const { accessKey, secretKey } = state.bucket;
   return { Authorization: await buildAuthHeader(accessKey, secretKey, method, rawPath) };
 }
 
-// ---- Admin: buckets ----
+/** Raw (signed) path and percent-encoded URL path for an object key in the open bucket. */
+function objectPaths(kind, key) {
+  const b = state.bucket.name;
+  return { raw: `/buckets/${b}/${kind}/${key}`, url: `/buckets/${encodeURIComponent(b)}/${kind}/${encodeKeyPath(key)}` };
+}
 
-async function refreshBuckets() {
-  const adminKey = $("admin-key").value.trim();
-  if (!adminKey) return toast("Enter the admin API key first", true);
+// ---- routing: #/ (buckets) and #/b/{bucket}/{folder...} ----
+
+function bucketHref(name, folder = "") {
+  return `#/b/${encodeURIComponent(name)}${folder ? "/" + encodeKeyPath(folder) : ""}`;
+}
+
+function parseRoute() {
+  const m = location.hash.match(/^#\/b\/([^/]+)(?:\/(.*))?$/);
+  if (!m) return { view: "home" };
   try {
-    const buckets = await api("/admin/buckets", { headers: { "X-Admin-Api-Key": adminKey } });
-    const tbody = document.querySelector("#buckets-table tbody");
-    tbody.innerHTML = "";
-    if (buckets.length === 0) {
-      tbody.innerHTML = `<tr><td class="empty-state" colspan="4">No buckets yet - create one above.</td></tr>`;
-      return;
-    }
-    const active = $("bucket-name").value.trim();
-    for (const b of buckets) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td class="key">${escapeHtml(b.name)}${b.name === active ? ' <span class="badge">active</span>' : ""}</td>
-        <td class="desc">${b.description ? escapeHtml(b.description) : '<span class="muted">-</span>'}</td>
-        <td class="num" title="${escapeHtml(new Date(b.createdAt).toLocaleString())}">${escapeHtml(formatDate(b.createdAt))}</td>
-        <td class="actions">
-          <div class="btn-row">
-            <button class="ghost" data-action="use">Use</button>
-            <button class="ghost" data-action="rotate">Rotate keys</button>
-            <button class="danger" data-action="delete">Delete</button>
-          </div>
-        </td>`;
-      tr.querySelector('[data-action="use"]').addEventListener("click", () => selectBucket(b.name));
-      tr.querySelector('[data-action="rotate"]').addEventListener("click", () => rotateBucketKey(b.name));
-      tr.querySelector('[data-action="delete"]').addEventListener("click", () => deleteBucket(b.name));
-      tbody.appendChild(tr);
-    }
+    return {
+      view: "bucket",
+      bucket: decodeURIComponent(m[1]),
+      folder: m[2] ? m[2].split("/").map(decodeURIComponent).join("/") : "",
+    };
+  } catch {
+    return { view: "home" };
+  }
+}
+
+function render() {
+  closeMenu();
+  const route = parseRoute();
+  if (route.view === "bucket") openBucket(route.bucket, route.folder);
+  else showHome();
+}
+
+function setCrumbs(parts) {
+  // parts: [{ label, href? }] - last one is the current location.
+  $("crumbs").innerHTML = parts
+    .map((p, i) => {
+      const last = i === parts.length - 1;
+      const item = last ? `<span class="current">${escapeHtml(p.label)}</span>` : `<a href="${p.href}">${escapeHtml(p.label)}</a>`;
+      return (i ? '<span class="sep">/</span>' : "") + item;
+    })
+    .join("");
+}
+
+function showView(id) {
+  for (const v of document.querySelectorAll(".view")) v.hidden = v.id !== id;
+}
+
+// ---- admin key ----
+
+function updateAdminChip() {
+  const on = !!store.adminKey.get();
+  $("admin-dot").classList.toggle("on", on);
+  $("admin-status").textContent = on ? "Admin connected" : "Admin key not set";
+}
+
+function setAdminKey(key) {
+  store.adminKey.set(key.trim());
+  updateAdminChip();
+  if (parseRoute().view === "home") showHome();
+}
+
+// ---- home: bucket cards ----
+
+async function showHome() {
+  showView("view-buckets");
+  setCrumbs([{ label: "Buckets" }]);
+  document.title = "Buckets · s3bender";
+
+  const hasAdmin = !!store.adminKey.get();
+  $("admin-gate").hidden = hasAdmin;
+  $("new-bucket").disabled = !hasAdmin;
+
+  if (!hasAdmin) {
+    renderBucketCards(store.bucketCreds.names().map((name) => ({ name })), false);
+    return;
+  }
+  try {
+    state.buckets = await api("/admin/buckets", { headers: adminHeaders() });
+    renderBucketCards(state.buckets, true);
   } catch (err) {
-    toast(`Failed to list buckets: ${err.message}`, true);
+    if (err.status === 401) {
+      toast("The saved admin key was rejected - enter it again", true);
+      $("admin-gate").hidden = false;
+    } else {
+      toast(`Failed to list buckets: ${err.message}`, true);
+    }
+    renderBucketCards(store.bucketCreds.names().map((name) => ({ name })), false);
+  }
+}
+
+function renderBucketCards(buckets, fromAdmin) {
+  const grid = $("bucket-grid");
+  grid.innerHTML = "";
+  if (buckets.length === 0) {
+    grid.innerHTML = fromAdmin
+      ? `<div class="empty"><strong>No buckets yet</strong>Create one with <em>New bucket</em> above.</div>`
+      : `<div class="empty"><strong>No saved buckets</strong>Connect as admin, or use <em>Open with keys</em>.</div>`;
+    return;
+  }
+  for (const b of buckets) {
+    const saved = !!store.bucketCreds.get(b.name);
+    const card = document.createElement("article");
+    card.className = "bucket-card";
+    card.tabIndex = 0;
+    card.innerHTML = `
+      <div class="card-top">
+        <span class="card-icon">${icon("bucket")}</span>
+        <button class="icon-btn" type="button" data-menu aria-label="Bucket actions">${icon("more")}</button>
+      </div>
+      <h3 title="${escapeHtml(b.name)}">${escapeHtml(b.name)}</h3>
+      <p class="desc">${b.description ? escapeHtml(b.description) : fromAdmin ? '<span class="muted">No description</span>' : ""}</p>
+      <div class="card-meta">
+        <span>${b.createdAt ? `Created ${escapeHtml(formatDate(b.createdAt))}` : "Saved in this browser"}</span>
+        <span class="badge ${saved ? "ok" : ""}">${saved ? "keys saved" : "no keys"}</span>
+      </div>`;
+    const open = () => (location.hash = bucketHref(b.name));
+    card.addEventListener("click", (e) => { if (!e.target.closest("[data-menu]")) open(); });
+    card.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target === card) open(); });
+    card.querySelector("[data-menu]").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const items = [{ label: "Open", action: open }];
+      if (fromAdmin) items.push({ label: "Rotate keys…", action: () => rotateBucketKey(b.name) });
+      if (saved) items.push({ label: "Forget saved keys", action: () => { store.bucketCreds.remove(b.name); showHome(); } });
+      if (fromAdmin) items.push("sep", { label: "Delete bucket…", danger: true, action: () => deleteBucket(b.name) });
+      openMenu(e.currentTarget, items);
+    });
+    grid.appendChild(card);
+  }
+}
+
+function showSecret(title, bucket) {
+  $("secret-dialog-title").textContent = title;
+  $("dialog-bucket-name").value = bucket.name;
+  $("dialog-access-key").value = bucket.accessKey;
+  $("dialog-secret-key").value = bucket.secretKey;
+  $("secret-dialog").showModal();
+}
+
+async function createBucket(name, description, remember) {
+  try {
+    const bucket = await api("/admin/buckets", {
+      method: "POST",
+      headers: adminHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(description ? { name, description } : { name }),
+    });
+    const creds = { name: bucket.name, accessKey: bucket.accessKey, secretKey: bucket.secretKey };
+    if (remember) store.bucketCreds.set(bucket.name, { accessKey: creds.accessKey, secretKey: creds.secretKey });
+    state.bucket = creds;
+    state.buckets = [...state.buckets.filter((x) => x.name !== bucket.name), bucket];
+    location.hash = bucketHref(bucket.name);
+    showSecret("Bucket created", bucket);
+  } catch (err) {
+    toast(`Failed to create bucket: ${err.message}`, true);
   }
 }
 
@@ -119,245 +321,360 @@ async function refreshBuckets() {
  * also the recovery path if a bucket's secret key is lost - see /_docs/how-to-use.md.
  */
 async function rotateBucketKey(name) {
-  const adminKey = $("admin-key").value.trim();
-  if (!adminKey) return toast("Enter the admin API key first", true);
   if (!confirm(`Rotate keys for "${name}"? The current access/secret key stops working immediately.`)) return;
   try {
-    const bucket = await api(`/admin/buckets/${encodeURIComponent(name)}/rotate`, {
-      method: "POST",
-      headers: { "X-Admin-Api-Key": adminKey },
-    });
-    $("secret-dialog-title").textContent = "Keys rotated";
-    $("dialog-bucket-name").value = name;
-    $("dialog-access-key").value = bucket.accessKey;
-    $("dialog-secret-key").value = bucket.secretKey;
-    $("secret-dialog").showModal();
-
-    if (store.bucketCreds.get(name)) {
-      store.bucketCreds.set(name, { accessKey: bucket.accessKey, secretKey: bucket.secretKey });
-    }
-    if ($("bucket-name").value.trim() === name) {
-      $("access-key").value = bucket.accessKey;
-      $("secret-key").value = bucket.secretKey;
-    }
+    const bucket = await api(`/admin/buckets/${encodeURIComponent(name)}/rotate`, { method: "POST", headers: adminHeaders() });
+    if (store.bucketCreds.get(name)) store.bucketCreds.set(name, { accessKey: bucket.accessKey, secretKey: bucket.secretKey });
+    if (state.bucket && state.bucket.name === name) state.bucket = { name, accessKey: bucket.accessKey, secretKey: bucket.secretKey };
+    showSecret("Keys rotated", bucket);
     toast(`Rotated keys for "${name}"`);
+    if (parseRoute().view === "home") showHome();
   } catch (err) {
     toast(`Failed to rotate keys: ${err.message}`, true);
   }
 }
 
-async function createBucket(name, description) {
-  const adminKey = $("admin-key").value.trim();
-  if (!adminKey) return toast("Enter the admin API key first", true);
-  try {
-    const bucket = await api("/admin/buckets", {
-      method: "POST",
-      headers: { "X-Admin-Api-Key": adminKey, "Content-Type": "application/json" },
-      body: JSON.stringify(description ? { name, description } : { name }),
-    });
-    $("secret-dialog-title").textContent = "Bucket created";
-    $("dialog-bucket-name").value = bucket.name;
-    $("dialog-access-key").value = bucket.accessKey;
-    $("dialog-secret-key").value = bucket.secretKey;
-    $("secret-dialog").showModal();
-
-    selectBucket(bucket.name);
-    $("access-key").value = bucket.accessKey;
-    $("secret-key").value = bucket.secretKey;
-    if ($("remember-creds").checked) {
-      store.bucketCreds.set(bucket.name, { accessKey: bucket.accessKey, secretKey: bucket.secretKey });
-    }
-    await refreshBuckets();
-  } catch (err) {
-    toast(`Failed to create bucket: ${err.message}`, true);
-  }
-}
-
 async function deleteBucket(name) {
-  const adminKey = $("admin-key").value.trim();
-  if (!adminKey) return toast("Enter the admin API key first", true);
   if (!confirm(`Delete bucket "${name}"? It must be empty.`)) return;
   try {
-    await api(`/admin/buckets/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-      headers: { "X-Admin-Api-Key": adminKey },
-    });
+    await api(`/admin/buckets/${encodeURIComponent(name)}`, { method: "DELETE", headers: adminHeaders() });
     store.bucketCreds.remove(name);
+    if (state.bucket && state.bucket.name === name) state.bucket = null;
     toast(`Deleted bucket "${name}"`);
-    await refreshBuckets();
+    if (parseRoute().view === "home") showHome();
+    else location.hash = "#/";
   } catch (err) {
     toast(`Failed to delete bucket: ${err.message}`, true);
   }
 }
 
-function updateActiveBucketBadge() {
-  const name = $("bucket-name").value.trim();
-  const badge = $("active-bucket-badge");
-  if (name) {
-    badge.textContent = name;
-    badge.classList.remove("empty");
-  } else {
-    badge.textContent = "none selected";
-    badge.classList.add("empty");
-  }
+// ---- keys dialog ----
+
+let keysResolve = null;
+
+/** Ask for a bucket's keys. Resolves to { name, accessKey, secretKey } or null if cancelled. */
+function promptKeys({ name = "", lockName = false, title = "Bucket keys", action = "Open bucket" } = {}) {
+  const saved = name ? store.bucketCreds.get(name) : null;
+  $("keys-title").textContent = title;
+  $("keys-bucket").value = name;
+  $("keys-bucket").readOnly = lockName;
+  $("keys-access").value = saved?.accessKey || (state.bucket?.name === name ? state.bucket.accessKey : "");
+  $("keys-secret").value = saved?.secretKey || (state.bucket?.name === name ? state.bucket.secretKey : "");
+  $("keys-remember").checked = true;
+  $("keys-form").querySelector('button[value="ok"]').textContent = action;
+  $("keys-dialog").showModal();
+  (name ? $("keys-access") : $("keys-bucket")).focus();
+  return new Promise((resolve) => (keysResolve = resolve));
 }
 
-function selectBucket(name) {
-  $("bucket-name").value = name;
-  const saved = store.bucketCreds.get(name);
-  if (saved) {
-    $("access-key").value = saved.accessKey;
-    $("secret-key").value = saved.secretKey;
+$("keys-dialog").addEventListener("close", () => {
+  const ok = $("keys-dialog").returnValue === "ok";
+  const result = ok
+    ? { name: $("keys-bucket").value.trim(), accessKey: $("keys-access").value.trim(), secretKey: $("keys-secret").value }
+    : null;
+  if (result && $("keys-remember").checked) {
+    store.bucketCreds.set(result.name, { accessKey: result.accessKey, secretKey: result.secretKey });
+  } else if (result) {
+    store.bucketCreds.remove(result.name);
   }
-  updateActiveBucketBadge();
-  document.querySelector('#objects-table tbody').innerHTML = "";
-  objectsView.pageCursors = [null];
-  objectsView.pageIndex = 0;
-  objectsView.totalObjects = 0;
-  $("objects-summary").hidden = true;
-  $("objects-pager").hidden = true;
+  $("keys-dialog").returnValue = "";
+  const resolve = keysResolve;
+  keysResolve = null;
+  if (resolve) resolve(result);
+});
+
+// ---- bucket view ----
+
+async function openBucket(name, folder) {
+  if (!state.bucket || state.bucket.name !== name) {
+    const saved = store.bucketCreds.get(name);
+    if (saved) {
+      state.bucket = { name, ...saved };
+    } else {
+      const creds = await promptKeys({ name, lockName: true, title: `Keys for ${name}` });
+      if (!creds) {
+        location.hash = "#/";
+        return;
+      }
+      state.bucket = { ...creds, name };
+    }
+    state.filter = "";
+    $("prefix-filter").value = "";
+  }
+  if (folder !== state.folder) {
+    state.filter = "";
+    $("prefix-filter").value = "";
+  }
+  if (folder !== state.folder || state.shownBucket !== name) setTableState("Loading…");
+  state.folder = folder;
+  state.shownBucket = name;
+
+  showView("view-bucket");
+  document.title = `${name} · s3bender`;
+  setCrumbs([{ label: "Buckets", href: "#/" }, { label: name }]);
+  $("bucket-title").textContent = name;
+  showBucketMeta(name);
+  if (!state.buckets.length && store.adminKey.get()) {
+    api("/admin/buckets", { headers: adminHeaders() })
+      .then((list) => { state.buckets = list; if (state.bucket?.name === name) showBucketMeta(name); })
+      .catch(() => { /* description is cosmetic */ });
+  }
+  renderPathCrumbs();
+  $("drop-target").textContent = `${name}/${folder}`;
+  await listObjects();
 }
 
-// ---- Bucket: objects ----
+function showBucketMeta(name) {
+  const meta = state.buckets.find((b) => b.name === name);
+  $("bucket-desc").textContent = meta?.description || (meta ? `Created ${formatDate(meta.createdAt)}` : "Signed with this bucket's own keys");
+}
 
-/** Reset to the first page and refresh both the page and the whole-bucket summary. */
+function renderPathCrumbs() {
+  const name = state.bucket.name;
+  const segs = state.folder.split("/").filter(Boolean);
+  const parts = [segs.length ? `<a href="${bucketHref(name)}">${escapeHtml(name)}</a>` : `<span class="here">${escapeHtml(name)}</span>`];
+  segs.forEach((seg, i) => {
+    const folder = segs.slice(0, i + 1).join("/") + "/";
+    parts.push(i === segs.length - 1 ? `<span class="here">${escapeHtml(seg)}</span>` : `<a href="${bucketHref(name, folder)}">${escapeHtml(seg)}</a>`);
+  });
+  $("path-crumbs").innerHTML = parts.join('<span class="sep">/</span>') + '<span class="sep">/</span>';
+}
+
+/** Reset to the first page and refresh both the page and the summary. */
 async function listObjects() {
-  const { bucket } = currentBucketCreds();
-  if (!bucket) return toast("Enter a bucket name first", true);
-  objectsView.pageCursors = [null];
-  objectsView.pageIndex = 0;
+  state.pageCursors = [null];
+  state.pageIndex = 0;
   await Promise.all([fetchObjectPage(), refreshStats()]);
 }
 
-/** Fetch and render the page at objectsView.pageIndex, using the cursor recorded for it. */
+function setTableState(html) {
+  document.querySelector("#objects-table tbody").innerHTML = `<tr><td class="state" colspan="5">${html}</td></tr>`;
+}
+
 async function fetchObjectPage() {
-  const { bucket } = currentBucketCreds();
-  if (!bucket) return;
-  const prefix = $("prefix-filter").value.trim();
-  const cursor = objectsView.pageCursors[objectsView.pageIndex] || null;
-  const params = new URLSearchParams({ limit: String(objectsView.pageSize) });
+  const seq = ++state.listSeq;
+  const prefix = listPrefix();
+  const cursor = state.pageCursors[state.pageIndex] || null;
+  const params = new URLSearchParams({ limit: String(state.pageSize) });
   if (prefix) params.set("prefix", prefix);
   if (cursor) params.set("cursor", cursor);
-  const rawPath = `/buckets/${bucket}/objects`;
+  const rawPath = `/buckets/${state.bucket.name}/objects`;
+  if (!document.querySelector("#objects-table tbody tr")) setTableState("Loading…");
   try {
-    const resp = await api(`${rawPath}?${params}`, { headers: await bucketAuthHeaders("GET", rawPath) });
-    if (resp.isTruncated && objectsView.pageCursors[objectsView.pageIndex + 1] === undefined) {
-      objectsView.pageCursors[objectsView.pageIndex + 1] = resp.nextCursor;
+    const resp = await api(`/buckets/${encodeURIComponent(state.bucket.name)}/objects?${params}`, {
+      headers: await bucketAuthHeaders("GET", rawPath),
+    });
+    if (seq !== state.listSeq) return;
+    if (resp.isTruncated && state.pageCursors[state.pageIndex + 1] === undefined) {
+      state.pageCursors[state.pageIndex + 1] = resp.nextCursor;
     }
     renderObjectsPage(resp);
   } catch (err) {
-    toast(`Failed to list objects: ${err.message}`, true);
+    if (seq !== state.listSeq) return;
+    $("objects-pager").hidden = true;
+    if (err.status === 401 || err.status === 403) {
+      setTableState(`<strong>These keys don't work for this bucket</strong>${escapeHtml(err.message)}`);
+      toast("Bucket keys were rejected - update them with the Keys button", true);
+    } else {
+      setTableState(`<strong>Couldn't list objects</strong>${escapeHtml(err.message)}`);
+    }
   }
 }
 
 /**
- * Whole-bucket (or whole-prefix) totals for the summary bar. Computed server-side from the object
- * index - the folder/file split is S3-style with delimiter="/": a key with no slash is a
- * top-level file, everything before the first slash is a top-level folder counted once.
+ * Whole-bucket (or whole-prefix) totals, computed server-side from the object index. The
+ * folder/file split is S3-style with delimiter="/" over the *full* key, so it's only meaningful
+ * at the bucket root - inside a folder only the object count and size are shown.
  */
 async function refreshStats() {
-  const { bucket } = currentBucketCreds();
-  if (!bucket) return;
-  const prefix = $("prefix-filter").value.trim();
-  const rawPath = `/buckets/${bucket}/stats`;
+  const prefix = listPrefix();
+  const rawPath = `/buckets/${state.bucket.name}/stats`;
   const query = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
   try {
-    const s = await api(`${rawPath}${query}`, { headers: await bucketAuthHeaders("GET", rawPath) });
-    objectsView.totalObjects = s.objects;
-    $("stat-folders").textContent = s.topLevelFolders;
-    $("stat-files").textContent = s.topLevelFiles;
-    $("stat-objects").textContent = s.objects;
+    const s = await api(`/buckets/${encodeURIComponent(state.bucket.name)}/stats${query}`, {
+      headers: await bucketAuthHeaders("GET", rawPath),
+    });
+    state.totalObjects = s.objects;
+    $("stat-objects").textContent = s.objects.toLocaleString();
     $("stat-size").textContent = formatBytes(s.totalBytes);
+    $("stat-folders").textContent = s.topLevelFolders.toLocaleString();
+    $("stat-files").textContent = s.topLevelFiles.toLocaleString();
+    for (const el of document.querySelectorAll(".root-only")) el.hidden = !!prefix;
     $("objects-summary").hidden = false;
-  } catch (err) {
-    toast(`Failed to load bucket stats: ${err.message}`, true);
+    updatePagerInfo();
+  } catch {
+    $("objects-summary").hidden = true;
   }
 }
 
 function renderObjectsPage(resp) {
-  const { bucket } = currentBucketCreds();
-  const prefix = $("prefix-filter").value.trim();
   const tbody = document.querySelector("#objects-table tbody");
-  const pager = $("objects-pager");
-  const objects = resp.objects;
-
   tbody.innerHTML = "";
-  if (objects.length === 0 && objectsView.pageIndex === 0) {
-    tbody.innerHTML = `<tr><td class="empty-state" colspan="6">No objects${prefix ? ` under "${escapeHtml(prefix)}"` : ""}.</td></tr>`;
-    pager.hidden = true;
+  state.lastPageCount = resp.objects.length;
+
+  if (resp.objects.length === 0 && state.pageIndex === 0) {
+    $("objects-pager").hidden = true;
+    setTableState(state.filter
+      ? `<strong>No matches</strong>Nothing in this folder starts with “${escapeHtml(state.filter)}”.`
+      : `<strong>${state.folder ? "This folder is empty" : "This bucket is empty"}</strong>Drop files anywhere here, or use Upload.`);
     return;
   }
 
-  for (const o of objects) {
+  for (const o of resp.objects) {
+    const kind = fileKind(o.contentType);
+    const rel = o.key.startsWith(state.folder) ? o.key.slice(state.folder.length) : o.key;
+    const segs = rel.split("/");
+    const fileName = segs.pop();
+    let folderAcc = state.folder;
+    const folderLinks = segs
+      .map((s) => {
+        folderAcc += s + "/";
+        return `<a class="seg" href="${bucketHref(state.bucket.name, folderAcc)}">${escapeHtml(s)}/</a>`;
+      })
+      .join("");
+    const previewable = isPreviewable(o.contentType);
+
     const tr = document.createElement("tr");
-    const publicUrl = `${location.origin}/buckets/${encodeURIComponent(bucket)}/objects/${encodeKeyPath(o.key)}`;
-    const etag = o.eTag || "";
     tr.innerHTML = `
-      <td class="key" title="${escapeHtml(o.key)}">${escapeHtml(o.key)}</td>
-      <td class="num">${formatBytes(o.size)}</td>
-      <td class="num" title="${escapeHtml(new Date(o.lastModified).toLocaleString())}">${escapeHtml(formatDate(o.lastModified))}</td>
-      <td><span class="badge ${o.public ? "tag-public" : "tag-private"}">${o.public ? "public" : "private"}</span></td>
-      <td class="etag"><code data-etag title="${escapeHtml(etag)} - click to copy">${escapeHtml(etag.slice(0, 10))}</code></td>
+      <td>
+        <div class="name-cell">
+          <span class="ficon ${kind}">${icon(kind)}</span>
+          <span class="key" title="${escapeHtml(o.key)}">${folderLinks}<button class="file" type="button">${escapeHtml(fileName)}</button></span>
+        </div>
+      </td>
+      <td class="r muted hide-xs">${formatBytes(o.size)}</td>
+      <td class="muted hide-sm" title="${escapeHtml(new Date(o.lastModified).toLocaleString())}">${escapeHtml(formatDate(o.lastModified))}</td>
+      <td class="hide-sm"><span class="badge ${o.public ? "public" : ""}">${o.public ? "public" : "private"}</span></td>
       <td class="actions">
         <div class="btn-row">
-          ${isPreviewable(o.contentType) ? '<button class="ghost" data-action="view">View</button>' : ""}
-          <button class="ghost" data-action="download">Download</button>
-          ${o.public
-            ? '<button class="ghost" data-action="copy-url">Copy URL</button><button class="ghost" data-action="make-private">Make private</button>'
-            : '<button class="ghost" data-action="presign">Presign link</button><button class="ghost" data-action="make-public">Make public</button>'}
-          <button class="danger" data-action="delete">Delete</button>
+          ${previewable ? `<button class="icon-btn" type="button" data-act="view" title="Preview" aria-label="Preview">${icon("eye")}</button>` : ""}
+          <button class="icon-btn" type="button" data-act="download" title="Download" aria-label="Download">${icon("download")}</button>
+          <button class="icon-btn" type="button" data-act="more" title="More" aria-label="More actions">${icon("more")}</button>
         </div>
       </td>`;
-    const on = (action, fn) => {
-      const btn = tr.querySelector(`[data-action="${action}"]`);
-      if (btn) btn.addEventListener("click", fn);
-    };
-    on("view", () => previewObject(o.key, o.contentType));
-    on("download", () => downloadObject(o.key));
-    on("presign", () => presignObject(o.key));
-    on("copy-url", () => copyText(publicUrl, "Public URL copied to clipboard"));
-    on("make-public", () => setObjectAcl(o.key, true));
-    on("make-private", () => setObjectAcl(o.key, false));
-    on("delete", () => deleteObject(o.key));
-    const etagEl = tr.querySelector("[data-etag]");
-    if (etagEl && etag) etagEl.addEventListener("click", () => copyText(etag, "ETag copied to clipboard"));
+
+    const view = () => previewObject(o);
+    tr.querySelector(".file").addEventListener("click", () => (previewable ? view() : downloadObject(o.key)));
+    tr.querySelector('[data-act="view"]')?.addEventListener("click", view);
+    tr.querySelector('[data-act="download"]').addEventListener("click", () => downloadObject(o.key));
+    tr.querySelector('[data-act="more"]').addEventListener("click", (e) => {
+      const publicUrl = `${location.origin}${objectPaths("objects", o.key).url}`;
+      openMenu(e.currentTarget, [
+        ...(previewable ? [{ label: "Preview", action: view }] : []),
+        { label: `Download (${formatBytes(o.size)})`, action: () => downloadObject(o.key) },
+        "sep",
+        o.public
+          ? { label: "Copy public URL", action: () => copyText(publicUrl, "Public URL copied") }
+          : { label: "Copy presigned link (1 h)", action: () => presignObject(o.key) },
+        { label: "Copy ETag", action: () => copyText(o.eTag, "ETag copied") },
+        { label: "Copy key", action: () => copyText(o.key, "Key copied") },
+        "sep",
+        o.public
+          ? { label: "Make private", action: () => setObjectAcl(o.key, false) }
+          : { label: "Make public", action: () => setObjectAcl(o.key, true) },
+        "sep",
+        { label: "Delete…", danger: true, action: () => deleteObject(o.key) },
+      ]);
+    });
     tbody.appendChild(tr);
   }
 
-  const start = objectsView.pageIndex * objectsView.pageSize;
-  const shownEnd = start + objects.length;
-  $("pager-info").textContent = objectsView.totalObjects
-    ? `${start + 1}–${shownEnd} of ${objectsView.totalObjects}`
-    : `${start + 1}–${shownEnd}`;
-  $("pager-pos").textContent = `Page ${objectsView.pageIndex + 1}`;
-  $("page-prev").disabled = objectsView.pageIndex <= 0;
+  $("pager-pos").textContent = `Page ${state.pageIndex + 1}`;
+  $("page-prev").disabled = state.pageIndex <= 0;
   $("page-next").disabled = !resp.isTruncated;
-  pager.hidden = false;
+  $("objects-pager").hidden = false;
+  updatePagerInfo();
 }
 
-async function uploadFile(file) {
-  const { bucket } = currentBucketCreds();
-  if (!bucket) return toast("Enter a bucket name first", true);
+function updatePagerInfo() {
+  const count = state.lastPageCount || 0;
+  if (!count) return;
+  const start = state.pageIndex * state.pageSize;
+  $("pager-info").textContent = state.totalObjects
+    ? `${(start + 1).toLocaleString()}–${(start + count).toLocaleString()} of ${state.totalObjects.toLocaleString()}`
+    : `${start + 1}–${start + count}`;
+}
+
+// ---- object actions ----
+
+/**
+ * Uploads go one at a time through XHR (fetch can't report upload progress) into the current
+ * folder. Each request is signed just before it's sent.
+ */
+async function uploadFiles(fileList) {
+  const files = Array.from(fileList);
+  if (!files.length || !state.bucket) return;
   const makePublic = $("upload-public").checked;
-  const rawPath = `/buckets/${bucket}/objects/${file.name}`;
-  try {
-    const headers = {
-      ...(await bucketAuthHeaders("PUT", rawPath)),
-      "Content-Type": file.type || "application/octet-stream",
-    };
-    if (makePublic) headers["X-S3Bender-Public"] = "true";
-    const res = await fetch(`/buckets/${encodeURIComponent(bucket)}/objects/${encodeKeyPath(file.name)}`, {
-      method: "PUT",
-      headers,
-      body: file,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    toast(`Uploaded "${file.name}"${makePublic ? " (public)" : ""}`);
-    $("file-input").value = "";
-    await listObjects();
-  } catch (err) {
-    toast(`Upload failed: ${err.message}`, true);
+  const tray = $("upload-tray");
+  const list = $("tray-list");
+  clearTimeout(uploadFiles.hideTimer);
+  for (const li of list.querySelectorAll("li")) {
+    if (li.querySelector(".status.done")) li.remove();
   }
+  tray.hidden = false;
+
+  const items = files.map((file) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<div class="row"><span class="fname"></span><span class="status">queued</span></div><div class="bar"><span></span></div>`;
+    li.querySelector(".fname").textContent = state.folder + file.name;
+    list.prepend(li);
+    return { file, li };
+  });
+
+  let ok = 0;
+  for (const [i, { file, li }] of items.entries()) {
+    $("tray-title").textContent = `Uploading ${i + 1} of ${items.length}`;
+    try {
+      await uploadOne(file, state.folder + file.name, makePublic, li);
+      ok++;
+    } catch (err) {
+      setItem(li, "err", err.message, 100);
+    }
+  }
+  $("tray-title").textContent = ok === items.length ? `Uploaded ${ok} file${ok === 1 ? "" : "s"}` : `${ok} of ${items.length} uploaded`;
+  if (ok === items.length && !list.querySelector(".status.err")) {
+    uploadFiles.hideTimer = setTimeout(() => { tray.hidden = true; list.innerHTML = ""; }, 4000);
+  }
+  await listObjects();
+}
+
+function setItem(li, cls, text, pct) {
+  const status = li.querySelector(".status");
+  status.className = `status ${cls}`;
+  status.textContent = text;
+  const bar = li.querySelector(".bar");
+  bar.className = `bar ${cls}`;
+  bar.firstElementChild.style.width = `${pct}%`;
+}
+
+async function uploadOne(file, key, makePublic, li) {
+  const { raw, url } = objectPaths("objects", key);
+  const headers = await bucketAuthHeaders("PUT", raw);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Authorization", headers.Authorization);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    if (makePublic) xhr.setRequestHeader("X-S3Bender-Public", "true");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        setItem(li, "", `${pct}%`, pct);
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setItem(li, "done", formatBytes(file.size), 100);
+        resolve();
+      } else {
+        let msg = `HTTP ${xhr.status}`;
+        try { msg = JSON.parse(xhr.responseText).message || msg; } catch { /* not JSON */ }
+        reject(new Error(msg));
+      }
+    };
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.send(file);
+  });
 }
 
 /**
@@ -365,70 +682,93 @@ async function uploadFile(file) {
  * Public objects are readable at their plain URL with no credential; private is the default.
  */
 async function setObjectAcl(key, makePublic) {
-  const { bucket } = currentBucketCreds();
-  if (!bucket) return toast("Enter a bucket name first", true);
-  const rawPath = `/buckets/${bucket}/acl/${key}`;
+  const { raw, url } = objectPaths("acl", key);
   try {
-    const res = await fetch(`/buckets/${encodeURIComponent(bucket)}/acl/${encodeKeyPath(key)}`, {
+    await api(url, {
       method: "PUT",
-      headers: { ...(await bucketAuthHeaders("PUT", rawPath)), "Content-Type": "application/json" },
+      headers: { ...(await bucketAuthHeaders("PUT", raw)), "Content-Type": "application/json" },
       body: JSON.stringify({ public: makePublic }),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     toast(`"${key}" is now ${makePublic ? "public" : "private"}`);
-    await listObjects();
+    await fetchObjectPage();
   } catch (err) {
     toast(`Failed to change visibility: ${err.message}`, true);
   }
 }
 
-async function copyText(text, successMessage) {
+async function deleteObject(key) {
+  if (!confirm(`Delete "${key}"?`)) return;
+  const { raw, url } = objectPaths("objects", key);
   try {
-    await navigator.clipboard.writeText(text);
-    toast(successMessage);
-  } catch {
-    toast(text);
+    await api(url, { method: "DELETE", headers: await bucketAuthHeaders("DELETE", raw) });
+    toast(`Deleted "${key}"`);
+    await listObjects();
+  } catch (err) {
+    toast(`Delete failed: ${err.message}`, true);
   }
 }
 
-async function downloadObject(key) {
-  const { bucket } = currentBucketCreds();
-  const rawPath = `/buckets/${bucket}/objects/${key}`;
+async function requestPresign(bucket, key, expiresInSeconds = 300) {
+  const rawPath = `/buckets/${bucket}/presign`;
+  return api(`/buckets/${encodeURIComponent(bucket)}/presign`, {
+    method: "POST",
+    headers: { ...(await bucketAuthHeaders("POST", rawPath)), "Content-Type": "application/json" },
+    body: JSON.stringify({ key, method: "GET", expiresInSeconds }),
+  });
+}
+
+/**
+ * The signature covers only the path, so a presigned URL is valid on any host that serves this
+ * API. Re-rooting it on this page's origin keeps previews and downloads same-origin (the
+ * `download` attribute only works same-origin) whatever S3BENDER_PUBLIC_BASE_URL says.
+ */
+function sameOrigin(url) {
+  const u = new URL(url, location.href);
+  return location.origin + u.pathname + u.search;
+}
+
+async function presignObject(key) {
   try {
-    const res = await fetch(`/buckets/${encodeURIComponent(bucket)}/objects/${encodeKeyPath(key)}`, {
-      headers: await bucketAuthHeaders("GET", rawPath),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
+    const result = await requestPresign(state.bucket.name, key, 3600);
+    await copyText(result.url, `Presigned link copied (expires ${new Date(result.expiresAt).toLocaleTimeString()})`);
+  } catch (err) {
+    toast(`Presign failed: ${err.message}`, true);
+  }
+}
+
+/**
+ * Downloads stream straight to disk through a short-lived presigned URL instead of being read
+ * into memory with fetch() first - large objects start immediately.
+ */
+async function downloadObject(key) {
+  try {
+    const result = await requestPresign(state.bucket.name, key, 300);
     const a = document.createElement("a");
-    a.href = url;
+    a.href = sameOrigin(result.url);
     a.download = key.split("/").pop();
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
   } catch (err) {
     toast(`Download failed: ${err.message}`, true);
   }
 }
 
-async function requestPresign(bucket, key) {
-  const rawPath = `/buckets/${bucket}/presign`;
-  return api(`/buckets/${encodeURIComponent(bucket)}/presign`, {
-    method: "POST",
-    headers: { ...(await bucketAuthHeaders("POST", rawPath)), "Content-Type": "application/json" },
-    body: JSON.stringify({ key, method: "GET", expiresInSeconds: 300 }),
-  });
-}
+// Preview URLs are reused per object *version* (bucket + key + ETag, under the current access key -
+// a rotation invalidates every URL signed with the old one) while they have at least a
+// minute left. Same URL means the browser can answer a repeat preview from its cache (the server
+// marks presigned responses cacheable, revalidating with a body-less 304 after 5 minutes) instead of
+// re-downloading the whole object; a re-upload changes the ETag and so naturally gets a fresh URL.
+const previewUrls = new Map();
+const PREVIEW_URL_SECONDS = 900;
 
-async function presignObject(key) {
-  const { bucket } = currentBucketCreds();
-  try {
-    const result = await requestPresign(bucket, key);
-    await navigator.clipboard.writeText(result.url).catch(() => {});
-    toast(`Presigned link copied to clipboard (expires ${new Date(result.expiresAt).toLocaleTimeString()})`);
-  } catch (err) {
-    toast(`Presign failed: ${err.message}`, true);
-  }
+async function previewUrl(bucket, key, etag) {
+  const cacheKey = `${state.bucket.accessKey}\n${bucket}\n${key}\n${etag}`;
+  const cached = previewUrls.get(cacheKey);
+  if (cached && new Date(cached.expiresAt).getTime() - Date.now() > 60_000) return cached;
+  const result = await requestPresign(bucket, key, PREVIEW_URL_SECONDS);
+  previewUrls.set(cacheKey, result);
+  return result;
 }
 
 function isPreviewable(contentType) {
@@ -441,32 +781,33 @@ function isPreviewable(contentType) {
  * client embedding an <img>/<video> tag would use, since those elements can't send an
  * Authorization header themselves.
  */
-async function previewObject(key, contentType) {
-  const { bucket } = currentBucketCreds();
+async function previewObject(o) {
   try {
-    const result = await requestPresign(bucket, key);
-
-    $("preview-title").textContent = key;
+    const result = await previewUrl(state.bucket.name, o.key, o.eTag);
+    const src = sameOrigin(result.url);
+    $("preview-title").textContent = o.key;
+    $("preview-download").onclick = () => downloadObject(o.key);
     const body = $("preview-body");
     body.innerHTML = "";
 
     let el;
-    if (contentType.startsWith("image/")) {
+    const ct = o.contentType;
+    if (ct.startsWith("image/")) {
       el = document.createElement("img");
-      el.src = result.url;
-    } else if (contentType.startsWith("video/")) {
+      el.alt = o.key;
+    } else if (ct.startsWith("video/")) {
       el = document.createElement("video");
-      el.src = result.url;
       el.controls = true;
-    } else if (contentType.startsWith("audio/")) {
+      el.autoplay = true;
+    } else if (ct.startsWith("audio/")) {
       el = document.createElement("audio");
-      el.src = result.url;
       el.controls = true;
+      el.autoplay = true;
     } else {
-      // PDF and text render fine in an iframe; anything else falls back to browser handling.
+      // PDF and text render fine in an iframe.
       el = document.createElement("iframe");
-      el.src = result.url;
     }
+    el.src = src;
     body.appendChild(el);
     $("preview-dialog").showModal();
   } catch (err) {
@@ -474,99 +815,166 @@ async function previewObject(key, contentType) {
   }
 }
 
-async function deleteObject(key) {
-  const { bucket } = currentBucketCreds();
-  const rawPath = `/buckets/${bucket}/objects/${key}`;
-  if (!confirm(`Delete "${key}"?`)) return;
-  try {
-    const res = await fetch(`/buckets/${encodeURIComponent(bucket)}/objects/${encodeKeyPath(key)}`, {
-      method: "DELETE",
-      headers: await bucketAuthHeaders("DELETE", rawPath),
+// ---- popover menu ----
+
+function openMenu(anchor, items) {
+  const menu = $("menu");
+  menu.innerHTML = "";
+  for (const item of items) {
+    if (item === "sep") {
+      menu.appendChild(document.createElement("hr"));
+      continue;
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.role = "menuitem";
+    btn.textContent = item.label;
+    if (item.danger) btn.className = "danger";
+    btn.addEventListener("click", () => {
+      closeMenu();
+      item.action();
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    toast(`Deleted "${key}"`);
-    await listObjects();
-  } catch (err) {
-    toast(`Delete failed: ${err.message}`, true);
+    menu.appendChild(btn);
   }
+  menu.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  const m = menu.getBoundingClientRect();
+  const top = r.bottom + 4 + m.height > window.innerHeight ? r.top - m.height - 4 : r.bottom + 4;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.right - m.width, window.innerWidth - m.width - 8))}px`;
+  menu.querySelector("button")?.focus();
 }
 
-// ---- helpers ----
-
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function closeMenu() {
+  $("menu").hidden = true;
 }
 
-function formatDate(value) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "-";
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-function formatBytes(n) {
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let i = -1;
-  do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
-  return `${n.toFixed(1)} ${units[i]}`;
-}
+document.addEventListener("click", (e) => {
+  if (!$("menu").hidden && !e.target.closest("#menu") && !e.target.closest("[data-menu], [data-act='more']")) closeMenu();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+window.addEventListener("resize", closeMenu);
+window.addEventListener("scroll", closeMenu, true);
 
 // ---- wire up ----
 
-$("admin-key").value = store.adminKey.get();
-$("admin-key").addEventListener("change", (e) => store.adminKey.set(e.target.value.trim()));
-
-$("create-bucket-form").addEventListener("submit", (e) => {
+$("admin-chip").addEventListener("click", () => {
+  $("admin-key").value = store.adminKey.get();
+  $("settings-dialog").showModal();
+});
+$("settings-dialog").addEventListener("close", () => {
+  if ($("settings-dialog").returnValue === "save") setAdminKey($("admin-key").value);
+  $("settings-dialog").returnValue = "";
+});
+$("admin-forget").addEventListener("click", () => {
+  $("settings-dialog").close();
+  setAdminKey("");
+});
+$("admin-gate").addEventListener("submit", (e) => {
   e.preventDefault();
-  const name = $("new-bucket-name").value.trim();
-  const description = $("new-bucket-description").value.trim();
-  if (name) createBucket(name, description);
-  $("new-bucket-name").value = "";
-  $("new-bucket-description").value = "";
+  setAdminKey($("gate-admin-key").value);
+  $("gate-admin-key").value = "";
 });
 
-$("refresh-buckets").addEventListener("click", refreshBuckets);
-$("list-objects").addEventListener("click", listObjects);
+$("new-bucket").addEventListener("click", () => {
+  $("create-form").reset();
+  $("create-dialog").showModal();
+});
+$("create-dialog").addEventListener("close", () => {
+  if ($("create-dialog").returnValue === "create") {
+    createBucket($("new-bucket-name").value.trim(), $("new-bucket-description").value.trim(), $("create-remember").checked);
+  }
+  $("create-dialog").returnValue = "";
+});
+
+$("open-with-keys").addEventListener("click", async () => {
+  const creds = await promptKeys({ title: "Open a bucket with its keys" });
+  if (!creds) return;
+  state.bucket = creds;
+  location.hash = bucketHref(creds.name);
+  if (parseRoute().bucket === creds.name) render();
+});
+
+$("bucket-keys").addEventListener("click", async () => {
+  const name = state.bucket.name;
+  const creds = await promptKeys({ name, lockName: true, title: `Keys for ${name}`, action: "Save" });
+  if (!creds) return;
+  state.bucket = { ...creds, name };
+  await listObjects();
+});
+
+$("refresh-objects").addEventListener("click", listObjects);
+$("upload-btn").addEventListener("click", () => $("file-input").click());
+$("file-input").addEventListener("change", (e) => {
+  uploadFiles(e.target.files);
+  e.target.value = "";
+});
+$("tray-close").addEventListener("click", () => {
+  $("upload-tray").hidden = true;
+  $("tray-list").innerHTML = "";
+});
+
+let filterTimer;
+$("prefix-filter").addEventListener("input", (e) => {
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => {
+    state.filter = e.target.value;
+    listObjects();
+  }, 250);
+});
 
 $("page-prev").addEventListener("click", () => {
-  if (objectsView.pageIndex > 0) {
-    objectsView.pageIndex -= 1;
+  if (state.pageIndex > 0) {
+    state.pageIndex -= 1;
     fetchObjectPage();
   }
 });
 $("page-next").addEventListener("click", () => {
-  objectsView.pageIndex += 1;
+  state.pageIndex += 1;
   fetchObjectPage();
 });
 $("page-size").addEventListener("change", (e) => {
-  objectsView.pageSize = parseInt(e.target.value, 10) || 25;
+  state.pageSize = parseInt(e.target.value, 10) || 25;
   listObjects();
 });
-$("dialog-close").addEventListener("click", () => $("secret-dialog").close());
-$("preview-close").addEventListener("click", () => {
-  $("preview-dialog").close();
-  $("preview-body").innerHTML = ""; // stop any playing video/audio
-});
 
-$("bucket-name").addEventListener("input", updateActiveBucketBadge);
-$("bucket-name").addEventListener("change", (e) => {
-  const saved = store.bucketCreds.get(e.target.value.trim());
-  if (saved) {
-    $("access-key").value = saved.accessKey;
-    $("secret-key").value = saved.secretKey;
+// Drag-and-drop anywhere over the bucket view uploads into the current folder.
+let dragDepth = 0;
+const view = $("view-bucket");
+const hasFiles = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
+view.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  $("drop-overlay").hidden = false;
+});
+view.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+view.addEventListener("dragleave", () => {
+  if (--dragDepth <= 0) {
+    dragDepth = 0;
+    $("drop-overlay").hidden = true;
   }
 });
-
-$("file-input").addEventListener("change", (e) => {
-  const file = e.target.files[0];
-  if (file) uploadFile(file);
+view.addEventListener("drop", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  $("drop-overlay").hidden = true;
+  uploadFiles(e.dataTransfer.files);
 });
+
+for (const btn of document.querySelectorAll("[data-copy]")) {
+  btn.addEventListener("click", () => copyText($(btn.dataset.copy).value, "Copied"));
+}
+$("dialog-close").addEventListener("click", () => $("secret-dialog").close());
+$("preview-close").addEventListener("click", () => $("preview-dialog").close());
+$("preview-dialog").addEventListener("close", () => ($("preview-body").innerHTML = "")); // stop playback
+
+window.addEventListener("hashchange", render);
 
 if (!crypto.subtle) {
   toast("Web Crypto (crypto.subtle) is unavailable - this page must be served over HTTPS or localhost.", true);
 }
 
-updateActiveBucketBadge();
-
-if (store.adminKey.get()) refreshBuckets();
+updateAdminChip();
+render();

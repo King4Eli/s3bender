@@ -1,4 +1,3 @@
-bin/
-obj/
 data/
-Api.Tests/
+**/*_test.go
+s3bender

@@ -2,10 +2,10 @@ name: s3bender
 services:
   s3bender:
     container_name: s3bender
-    image: s3bender-engine:latest
+    image: ghcr.io/king4eli/s3bender:${IMAGE_TAG:-latest}
     ports:
-      - "8080:8080" #api
-      - "8081:8081" # frontend
+      - "9066:8080" #api
+      - "9067:8081" # frontend
     env_file:
       - .env/engine.env
     volumes:

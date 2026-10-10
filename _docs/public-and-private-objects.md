@@ -100,9 +100,9 @@ s3bender won't answer a conditional request with `304` on its own.
 
 ## How this is enforced
 
-`BucketAuthMiddleware` checks the object's visibility *before* it even looks for an `AccessKey` -
-for a `GET`/`HEAD` on a path shaped like `/buckets/{bucket}/objects/{key}`, if
-`ObjectStorageService.IsPublic(bucket, key)` is true, the request is dispatched immediately with no
+The bucket auth filter (`bucketAuth` in `engine/internal/server/auth.go`) checks the object's
+visibility *before* it even looks for an `AccessKey` - for a `GET`/`HEAD` on a path shaped like `/buckets/{bucket}/objects/{key}`, if
+`Storage.IsPublic(bucket, key)` is true, the request is dispatched immediately with no
 signature check. Every other verb, and every request for a private object, falls through to the
 normal credential check (header or presigned) exactly as before - see auth-and-signing.md. Because
 the check is per-object, you can freely mix public and private objects in the same bucket.

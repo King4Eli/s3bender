@@ -34,13 +34,13 @@ non-multipart uploads, used here purely as an integrity fingerprint, not a secur
 computed once as the bytes stream past on `PUT`.
 
 Two pieces of upload-supplied metadata plus that hash are stored in a small JSON sidecar file at
-`{storage root}/.meta/{bucket}/{key}` - `{"contentType": "image/png", "public": false, "eTag":
-"..."}` - deliberately outside `{bucket}/`, so it never appears in a directory walk or counts
+`{storage root}/.meta/{bucket}/{key}` - `{"ContentType": "image/png", "Public": false, "ETag":
+"..."}` (field names are matched case-insensitively on read) - deliberately outside `{bucket}/`, so it never appears in a directory walk or counts
 toward "is this bucket empty". `contentType` is replayed verbatim as the `Content-Type` response
 header on every future GET/HEAD of that key (falling back to `application/octet-stream` if absent).
 This is what lets a presigned URL - or a public object's plain URL - be dropped straight into an
 `<img>`/`<video>`/`<audio>` tag and render instead of download - see presigned-urls.md. `public` is
-what `BucketAuthMiddleware` checks to decide whether a GET/HEAD needs a valid signature at all.
+what the bucket auth filter checks to decide whether a GET/HEAD needs a valid signature at all.
 
 A sidecar written before the `public` field existed is a bare Content-Type string, not JSON; it's
 read back as `{contentType: <that string>, public: false}` rather than failing to parse, so
